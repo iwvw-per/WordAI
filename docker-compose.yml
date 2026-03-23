@@ -1,0 +1,8 @@
+services:
+  wordai:
+    image: ghcr.io/iwvw/wordai:latest
+    ports:
+      - "8080:80"
+    environment:
+      - SERVER_URL=${SERVER_URL:-https://wordai.dsuk.top}
+    restart: always
