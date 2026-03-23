@@ -22,7 +22,9 @@ if (serverUrl) {
 }
 
 if (!serverUrl || serverUrl.includes("your-server")) {
-  console.error("❌ 错误：未发现有效的 SERVER_URL！请通过环境变量或 deploy.config.js 设置。");
+  console.error("❌ 错误：未发现有效的 SERVER_URL！");
+  console.error("   - 如果是本地构建，请检查 deploy.config.js 是否包含 SERVER_URL。");
+  console.error("   - 如果是 CI 构建，请确保 GitHub Secrets 中设置了 SERVER_URL，且 Dockerfile 正确传递了该变量。");
   process.exit(1);
 }
 

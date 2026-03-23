@@ -14,8 +14,8 @@ COPY src/ ./src/
 COPY manifest.xml ./
 
 # Accept server URL as build arg, map to ENV for the build script
-ARG SERVER_URL=https://localhost:3000
-ENV SERVER_URL=${SERVER_URL}
+ARG SERVER_URL
+ENV SERVER_URL=${SERVER_URL:-https://localhost:3000}
 
 # Build production bundle
 RUN npm run build:prod
