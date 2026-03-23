@@ -7,6 +7,7 @@ import "./taskpane.css";
 import * as storage from "../utils/storage.js";
 import * as llm from "../utils/llm.js";
 import * as ooxml from "../utils/ooxml.js";
+import * as format from "../utils/format.js";
 
 // ==================== 状态 ====================
 let appInitialized = false;
@@ -197,6 +198,55 @@ function bindActionEvents() {
       document.getElementById("custom-run-btn").click();
     }
   });
+
+  document.getElementById("enhance-keywords-btn")?.addEventListener("click", executeKeywordEnhancement);
+}
+
+// ==================== 演示：格式修改 ====================
+async function executeKeywordEnhancement() {
+  if (isProcessing) return;
+
+  if (!storage.isConfigured()) {
+    showConfigBanner();
+    showToast("请先完成 API 配置", "warning");
+    return;
+  }
+
+  isProcessing = true;
+  const btn = document.getElementById("enhance-keywords-btn");
+  btn.disabled = true;
+  showInlineStatus("processing", "正在分析关键词...");
+
+  try {
+    await Word.run(async (context) => {
+      const selection = context.document.getSelection();
+      selection.load("text");
+      await context.sync();
+
+      const text = selection.text.trim();
+      if (!text) throw new Error("请先选中一段文字");
+
+      const systemPrompt = "你是一个文档助手。请从下面这段文字中识别出最重要的 3-5 个核心关键词。直接输出关键词列表，用中文逗号分隔，不要有任何其他解释文字。";
+      const result = await llm.callLLM(systemPrompt, text);
+      
+      const keywords = result.split(/[，,]+/).map(k => k.trim()).filter(k => k);
+      
+      if (keywords.length > 0) {
+        showInlineStatus("processing", `正在加粗: ${keywords.join(" ")}`);
+        await format.highlightKeywords(keywords, "#2563eb");
+        showInlineStatus("done", "关键词已增强 ✓");
+      } else {
+        showInlineStatus("error", "未识别到显著关键词");
+      }
+      setTimeout(() => hideInlineStatus(), 2000);
+    });
+  } catch (err) {
+    showInlineStatus("error", err.message);
+    setTimeout(() => hideInlineStatus(), 3000);
+  } finally {
+    isProcessing = false;
+    btn.disabled = false;
+  }
 }
 
 // ==================== 核心：一键执行 ====================
