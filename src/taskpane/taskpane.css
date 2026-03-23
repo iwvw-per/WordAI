@@ -314,6 +314,81 @@ select.form-input { cursor: pointer; padding-right: 24px; }
 .modal-content h3 { font-size: 13px; font-weight: 600; margin-bottom: var(--space-md); }
 .modal-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-md); justify-content: flex-end; }
 
+/* ==================== Academic Page (Compact) ==================== */
+.academic-section {
+  margin-bottom: var(--space-md) !important;
+}
+
+.academic-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  margin-top: var(--space-xs);
+}
+
+.compact-details {
+  margin-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-sm);
+}
+
+.compact-details summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+}
+
+.form-group-compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-sm);
+  gap: var(--space-sm);
+}
+
+.form-group-compact label {
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.form-input-sm {
+  width: 60px;
+  padding: 2px 4px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+
+.compact-list {
+  margin-top: var(--space-sm);
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+}
+
+.compact-list-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.compact-list-item:last-child {
+  border-bottom: none;
+}
+
+.compact-list-item:hover {
+  background: var(--bg-hover);
+}
+
 /* ==================== Utils ==================== */
 .hidden { display: none !important; }
 @keyframes spin { to { transform: rotate(360deg); } }

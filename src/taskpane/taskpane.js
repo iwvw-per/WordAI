@@ -8,6 +8,8 @@ import * as storage from "../utils/storage.js";
 import * as llm from "../utils/llm.js";
 import * as ooxml from "../utils/ooxml.js";
 import * as format from "../utils/format.js";
+import * as tableUtils from "../utils/table.js";
+import * as refUtils from "../utils/references.js";
 
 // ==================== 状态 ====================
 let appInitialized = false;
@@ -46,6 +48,7 @@ function initApp() {
   bindActionEvents();
   bindSettingsEvents();
   bindModalEvents();
+  bindAcademicEvents();
 }
 
 // ==================== 主题 ====================
@@ -659,4 +662,71 @@ function showToast(message, type = "info") {
     toast.style.transition = "opacity 0.3s";
     setTimeout(() => toast.remove(), 300);
   }, 2500);
+}
+
+// ==================== 学术工具事件 ====================
+function bindAcademicEvents() {
+  // --- 表格工具 ---
+  document.getElementById("btn-apply-3line")?.addEventListener("click", async () => {
+    try {
+      showInlineStatus("processing", "正在美化表格...");
+      await Word.run(async (context) => {
+        const selection = context.document.getSelection();
+        const tables = selection.tables;
+        tables.load("items");
+        await context.sync();
+
+        if (tables.items.length === 0) throw new Error("请先选中包含表格的区域");
+        
+        const config = {
+          topWidth: parseFloat(document.getElementById("input-line-bold").value) || 1.5,
+          bottomWidth: parseFloat(document.getElementById("input-line-bold").value) || 1.5,
+          headerWidth: 0.75
+        };
+
+        for (let table of tables.items) {
+          await tableUtils.applyAcademicStyle(table, config);
+        }
+        showInlineStatus("done", "表格已美化 ✓");
+      });
+    } catch (err) {
+      showInlineStatus("error", err.message);
+    }
+    setTimeout(() => hideInlineStatus(), 2000);
+  });
+
+  document.getElementById("btn-scan-tables")?.addEventListener("click", async () => {
+    try {
+      const resultsDiv = document.getElementById("table-scan-results");
+      resultsDiv.classList.toggle("hidden");
+      if (resultsDiv.classList.contains("hidden")) return;
+
+      resultsDiv.innerHTML = '<div class="compact-list-item">扫描中...</div>';
+      
+      const tables = await tableUtils.getAllTablesInfo();
+      if (tables.length === 0) {
+        resultsDiv.innerHTML = '<div class="compact-list-item">未发现表格</div>';
+      } else {
+        resultsDiv.innerHTML = tables.map(t => `
+          <div class="compact-list-item" data-id="${t.id}">
+            <span>表格 ${t.id + 1} (${t.rowCount}x${t.columnCount})</span>
+          </div>
+        `).join("");
+      }
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+
+  // --- 参考文献 ---
+  document.getElementById("btn-match-refs")?.addEventListener("click", async () => {
+    try {
+      showInlineStatus("processing", "正在扫描占位符...");
+      const results = await refUtils.scanPlaceholders();
+      showInlineStatus("done", `发现 ${results.items.length} 处引用待处理 ✓`);
+    } catch (err) {
+      showInlineStatus("error", err.message);
+    }
+    setTimeout(() => hideInlineStatus(), 2000);
+  });
 }

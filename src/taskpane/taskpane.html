@@ -23,6 +23,7 @@
       </div>
       <nav class="tab-bar">
         <button class="tab-btn active" data-tab="actions" id="tab-actions">操作</button>
+        <button class="tab-btn" data-tab="academic" id="tab-academic">学术</button>
         <button class="tab-btn" data-tab="settings" id="tab-settings">设置</button>
       </nav>
     </header>
@@ -51,6 +52,46 @@
           <button class="btn btn-primary btn-block" id="custom-run-btn">
             <span class="btn-icon">▶</span> 执行
           </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- 学术页 -->
+    <div id="page-academic" class="page">
+      <!-- 表格工具 -->
+      <section class="section academic-section">
+        <h2 class="section-title">📊 表格美化</h2>
+        <div class="academic-card">
+          <button class="btn btn-primary btn-block btn-sm" id="btn-apply-3line">一键三线表</button>
+          <button class="btn btn-ghost btn-block btn-sm" id="btn-scan-tables" style="margin-top:4px">扫描全文表格</button>
+          <div id="table-scan-results" class="compact-list hidden"></div>
+          
+          <details class="compact-details">
+            <summary>微调参数</summary>
+            <div class="form-group-compact">
+              <label>顶/底线宽 (pt)</label>
+              <input type="number" id="input-line-bold" value="1.5" step="0.25" min="0.5" class="form-input-sm">
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- 引用工具 -->
+      <section class="section academic-section">
+        <h2 class="section-title">📚 参考文献</h2>
+        <div class="academic-card">
+          <button class="btn btn-primary btn-block btn-sm" id="btn-match-refs">匹配占位符 【作者】</button>
+          <button class="btn btn-ghost btn-block btn-sm" id="btn-refresh-refs" style="margin-top:4px">一键刷新编号与链接</button>
+        </div>
+      </section>
+
+      <!-- 写作辅助 -->
+      <section class="section academic-section">
+        <h2 class="section-title">✍️ 写作辅助</h2>
+        <div class="academic-card">
+          <button class="btn btn-ghost btn-block btn-sm" id="btn-term-check">术语一致性检查</button>
+          <button class="btn btn-ghost btn-block btn-sm" id="btn-renumber" style="margin-top:4px">图表编号同步</button>
+          <button class="btn btn-ghost btn-block btn-sm" id="btn-gen-abstract" style="margin-top:4px">生成摘要与关键词</button>
         </div>
       </section>
     </div>
