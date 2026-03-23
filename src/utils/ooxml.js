@@ -41,6 +41,8 @@ export async function markSelection() {
     const validParagraphs = [];
     const validRanges = [];
 
+    const isSingleParagraphSelected = paragraphs.items.length === 1;
+
     for (let i = 0; i < paragraphs.items.length; i++) {
       const p = paragraphs.items[i];
       const range = paragraphRanges[i];
@@ -48,16 +50,33 @@ export async function markSelection() {
       try { text = p.text.trim(); } catch(e) {}
       if (!text) continue;
 
-      if (skipRules.headings) {
-        const styleName = (p.style || "").toString().toLowerCase();
-        const isNumberedHeader = /^(\s*(\d+\.)+\d*\s)/.test(text);
-        if (styleName.includes("heading") || styleName.includes("title") || styleName.includes("标题") || isNumberedHeader) {
+      const styleName = (p.style || "").toString().toLowerCase();
+      // 更加精准的数字标题检测：必须是 1. 或 1.1 这种开头，且后面跟有空格或制表符
+      const isNumberedHeader = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text);
+      
+      console.log(`[DEBUG] Paragraph: "${text.substring(0, 20)}...", Style: ${styleName}, isNumberedHeader: ${isNumberedHeader}`);
+
+      if (skipRules.headings && !isSingleParagraphSelected) {
+        // 仅在非单一选区时跳过明确的标题样式
+        const isHeadingStyle = styleName.includes("heading") || 
+                             styleName.includes("标题") || 
+                             (styleName.includes("title") && !styleName.includes("subtitle") && !styleName.includes("副标题"));
+        
+        if (isHeadingStyle || isNumberedHeader) {
+          console.log(`[DEBUG] Skipped as Heading`);
           continue;
         }
       }
 
       if (skipRules.tables && isTableCheckSupported) {
-        try { if (range.parentTableCell && !range.parentTableCell.isNullObject) continue; } catch(e) {}
+        try { 
+          // 增加 isNullObject 的检查
+          if (range.parentTableCell && !range.parentTableCell.isNullObject) {
+            // 如果用户只选了这一个单元格，可能还是想处理的，但目前规则是跳过表格
+            console.log(`[DEBUG] Skipped as Table Cell`);
+            continue;
+          }
+        } catch(e) {}
       }
 
       validParagraphs.push(p);
