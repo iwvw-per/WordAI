@@ -222,9 +222,12 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
   try {
     const result = await ooxml.executeAndReplace(
       async (text) => {
-        let result = await llm.callLLM(systemPrompt, text, currentAbortController.signal);
+        // 动态注入保护指令，确保 AI 不会篡改占位符
+        const protectionNotice = "\n\n注意：文中的 {{REF_N}} 是受保护的引用占位符，请务必原封不动保留并放置在正确的语义位置。";
+        let result = await llm.callLLM(systemPrompt + protectionNotice, text, currentAbortController.signal);
+        
         // 清理常见的 AI 回复套话前缀
-        result = result.replace(/^((这里是|这是)?(修改后|润色后|翻译后|重写后|扩展后|缩写后|处理后)的?(内容|文本|结果|段落)?[：:\n]+)/i, "").trim();
+        result = result.replace(/^([\s\n]*(\*\*|__)?(这里是|这是)?(修改后|润色后|翻译后|重写后|扩展后|缩写后|处理后)的?(内容|文本|结果|段落)?[\s\n]*(\*\*|__)?[\s\n]*[：:\n]+)/i, "").trim();
         // 清理可能包裹的 markdown 代码块
         result = result.replace(/^```[a-zA-Z]*\n/i, "").replace(/\n```$/i, "").trim();
         return result;
@@ -339,6 +342,8 @@ function loadSettings() {
   document.getElementById("skip-crossrefs").checked = rules.crossReferences;
   document.getElementById("skip-images").checked = rules.images;
   document.getElementById("skip-toc").checked = rules.toc;
+
+  document.getElementById("diff-mode-toggle").checked = storage.getDiffMode();
 }
 
 function bindSettingsEvents() {
@@ -379,6 +384,11 @@ function bindSettingsEvents() {
         toc: document.getElementById("skip-toc").checked,
       });
     });
+  });
+
+  // 显示对比
+  document.getElementById("diff-mode-toggle").addEventListener("change", (e) => {
+    storage.setDiffMode(e.target.checked);
   });
 
   // 提示词管理

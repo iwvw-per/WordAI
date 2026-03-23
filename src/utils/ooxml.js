@@ -2,13 +2,16 @@
  * ooxml.js - 格式保留替换引擎
  * 使用 ContentControl 标记重点选区 + 过滤杂音标题 + 修复上标
  */
+import * as storage from "./storage.js";
 
 const CC_TAG = "wordai_target";
 
 // ==================== 标记选区 ====================
 
+// ==================== 标记选区（增强：捕获引用范围的 OOXML） ====================
+
 export async function markSelection() {
-  let texts = [];
+  let results = [];
   await Word.run(async (context) => {
     // 清理之前的标记
     const existing = context.document.contentControls.getByTag(CC_TAG);
@@ -20,48 +23,71 @@ export async function markSelection() {
     await context.sync();
 
     // 获取选区段落
+    const skipRules = storage.getSkipRules();
     const selection = context.document.getSelection();
     const paragraphs = selection.paragraphs;
-    paragraphs.load(["items", "styleBuiltIn", "style", "text"]);
+    
+    paragraphs.load(["items", "style", "text"]);
     await context.sync();
 
-    // 过滤出非标题段落
+    const isTableCheckSupported = Office.context.requirements.isSetSupported("WordApi", "1.3");
+    const paragraphRanges = paragraphs.items.map(p => p.getRange());
+    if (skipRules.tables && isTableCheckSupported) {
+       paragraphRanges.forEach(r => r.load("parentTableCell"));
+    }
+    
+    try { await context.sync(); } catch (e) {}
+
     const validParagraphs = [];
-    for (const p of paragraphs.items) {
-      const styleBuiltIn = p.styleBuiltIn.toString().toLowerCase();
-      const styleName = p.style.toString().toLowerCase();
-      if (styleBuiltIn.includes("heading") || styleBuiltIn.includes("title") || styleName.includes("标题")) {
-        continue;
+    const validRanges = [];
+
+    for (let i = 0; i < paragraphs.items.length; i++) {
+      const p = paragraphs.items[i];
+      const range = paragraphRanges[i];
+      let text = "";
+      try { text = p.text.trim(); } catch(e) {}
+      if (!text) continue;
+
+      if (skipRules.headings) {
+        const styleName = (p.style || "").toString().toLowerCase();
+        const isNumberedHeader = /^(\s*(\d+\.)+\d*\s)/.test(text);
+        if (styleName.includes("heading") || styleName.includes("title") || styleName.includes("标题") || isNumberedHeader) {
+          continue;
+        }
       }
+
+      if (skipRules.tables && isTableCheckSupported) {
+        try { if (range.parentTableCell && !range.parentTableCell.isNullObject) continue; } catch(e) {}
+      }
+
       validParagraphs.push(p);
+      validRanges.push(range);
     }
 
-    // 逐段处理，使用边界裁剪确保只处理用户实际选中的文本
+    // 搜索引用用的通配符模式（Word 语法）
+    const refSearches = [
+      "\\[[0-9.,\\- ]@\\]", // [1], [1-3], [1, 2]
+      "图 [0-9]@",           // 图 1
+      "表 [0-9]@",           // 表 1
+      "式([0-9]@)",         // 式(1)
+      "Fig. [0-9]@",        // Fig. 1
+      "Figure [0-9]@",      // Figure 1
+      "Table [0-9]@",       // Table 1
+      "Section [0-9]@"      // Section 1
+    ];
+
     for (let i = 0; i < validParagraphs.length; i++) {
       const p = validParagraphs[i];
+      let targetRange = validRanges[i];
 
       try {
-        let targetRange;
-
         if (validParagraphs.length === 1) {
-          // 只有一个段落：直接使用用户的选区范围（最精准，绝不碰未选中的字）
           targetRange = selection;
         } else if (i === 0) {
-          // 首段：从选区起点 → 段落内容末尾（裁剪掉段落中选区之前的文字）
-          try {
-            targetRange = selection.getRange("Start").expandTo(p.getRange("Content").getRange("End"));
-          } catch {
-            targetRange = p.getRange("Content");
-          }
+          targetRange = selection.getRange("Start").expandTo(p.getRange("Content").getRange("End"));
         } else if (i === validParagraphs.length - 1) {
-          // 末段：从段落内容起点 → 选区终点（裁剪掉段落中选区之后的文字，如交叉引用上标）
-          try {
-            targetRange = p.getRange("Content").getRange("Start").expandTo(selection.getRange("End"));
-          } catch {
-            targetRange = p.getRange("Content");
-          }
+          targetRange = p.getRange("Content").getRange("Start").expandTo(selection.getRange("End"));
         } else {
-          // 中间段落：完全被选区包含，直接使用全段
           targetRange = p.getRange("Content");
         }
 
@@ -71,66 +97,75 @@ export async function markSelection() {
         const text = targetRange.text.trim();
         if (!text) continue;
 
-        let validText = text;
-
-        // 如果选区内仍有尾部引用，尝试搜寻并收缩选中区域跳过它
-        const tailRegex = /((?:\[[^\]]+\]|【[^】]+】)[\s。.,，;；、]*)+$/;
-        const match = text.match(tailRegex);
-
-        if (match && match[0].length < text.length && match[0].length < 200) {
-          const tailText = match[0];
+        // --- 核心：提取范围内的引用片段 OOXML ---
+        const refMap = [];
+        for (const pattern of refSearches) {
           try {
-            const searchResults = targetRange.search(tailText, { matchWholeWord: false, matchCase: false });
-            searchResults.load("items");
+            const matches = targetRange.search(pattern, { matchWildcards: true });
+            matches.load("items");
             await context.sync();
-
-            if (searchResults.items.length > 0) {
-              const lastMatch = searchResults.items[searchResults.items.length - 1];
-              targetRange = targetRange.getRange("Start").expandTo(lastMatch.getRange("Before"));
-              validText = text.substring(0, text.length - tailText.length);
+            for (const matchRange of matches.items) {
+              matchRange.load(["text", "address"]); 
+              const ooxml = matchRange.getOoxml();
+              await context.sync();
+              refMap.push({
+                text: matchRange.text,
+                ooxml: ooxml.value,
+                // 用于排序，确保占位符顺序与文中一致
+                address: matchRange.address 
+              });
             }
-          } catch (e) {
-            // search 报错则保持 targetRange 不变
-          }
+          } catch (e) {}
         }
 
-        // 插入标记框
+        // 按文中出现位置排序（根据 Word 的 range address 启发式排序，或者简单依靠 search 结果）
+        // 这里简化处理：search 结果通常已经是有序的。如果不放心，可以根据 index 排序。
+        // 由于我们将 refMap 用于 tokenize，我们需要确保它唯一
+        
+        let tokenizedText = text;
+        const finalRefMap = [];
+        
+        // 倒序替换以防索引偏移（或者使用特殊 Token 避免二次匹配）
+        // 这里我们直接用 detokenizeReferences 的逻辑，提前准备好 finalRefMap
+        // 为确保精准，我们按长度从长到短匹配（防止 [1-3] 被匹配为 [1]）
+        const uniqueRefs = [];
+        refMap.sort((a, b) => b.text.length - a.text.length).forEach(item => {
+           if (!uniqueRefs.find(u => u.text === item.text)) {
+              uniqueRefs.push(item);
+           }
+        });
+
+        uniqueRefs.forEach((item, idx) => {
+          const placeholder = `{{REF_${idx}}}`;
+          tokenizedText = tokenizedText.split(item.text).join(placeholder);
+          finalRefMap.push({ placeholder, ooxml: item.ooxml, original: item.text });
+        });
+
         const cc = targetRange.insertContentControl();
         cc.tag = CC_TAG;
-        cc.title = "";
         cc.appearance = Word.ContentControlAppearance.hidden;
         await context.sync();
-        texts.push(validText);
+
+        results.push({
+          text: tokenizedText,
+          refMap: finalRefMap
+        });
       } catch (err) {
-        // 极端兜底：如果裁剪也失败，尝试框住整个段落
-        try {
-          const fallbackRange = p.getRange("Content");
-          fallbackRange.load("text");
-          await context.sync();
-          const fbText = fallbackRange.text.trim();
-          if (!fbText) continue;
-          const cc = fallbackRange.insertContentControl();
-          cc.tag = CC_TAG;
-          cc.title = "";
-          cc.appearance = Word.ContentControlAppearance.hidden;
-          await context.sync();
-          texts.push(fbText);
-        } catch (fatalErr) {
-          console.warn("Paragraph marking failed:", fatalErr);
-        }
+        console.warn("Paragraph marking failed:", err);
       }
     }
   });
-  return texts;
+  return results;
 }
 
-// ==================== 逐段回写（保留段落格式，恢复引用） ====================
+// ==================== 逐段回写（物理拼合文本与 OOXML） ====================
 
 /**
- * 替换首个标记内容，并恢复其中的上标
- * @param {string} newText - LLM 返回的新文字
+ * 替换首个标记内容
+ * @param {string} newText - LLM 返回的（含占位符）文字
+ * @param {Array} refMap - 对应的占位符映射
  */
-async function replaceSingleMarkedContent(newText) {
+async function replaceSingleMarkedContent(newText, refMap) {
   await Word.run(async (context) => {
     const ccs = context.document.contentControls.getByTag(CC_TAG);
     ccs.load("items");
@@ -139,65 +174,76 @@ async function replaceSingleMarkedContent(newText) {
     if (ccs.items.length === 0) return;
 
     const cc = ccs.items[0];
-    const newLines = newText.split(/\r?\n/).filter((line) => line.trim().length > 0);
-
-    // 行内 ContentControl 不允许通过 API 直接 insertParagraph 插入块级硬回车段落，否则将抛出 InvalidArgument 错误
-    // 因此使用换行符 \n 拼合在一起进行同选区替换（视觉表现为段内的垂直软换行）
-    const fullText = newLines.join("\n");
-    cc.insertText(fullText, Word.InsertLocation.replace);
+    const cleanText = newText.split(/\r?\n/).filter(l => l.trim()).join("\n");
+    
+    // 清空内容，准备注入
+    cc.insertText("", Word.InsertLocation.replace);
     await context.sync();
 
-    // 在当前最新插入完成的范围内，全局搜索匹配形如 [1], [13] 这种样式的引用标记，并施加上标
-    // 注意：Word 原生通配符不支持标准的 '+' 取而代之的是 '@'
-    try {
-      const searchResults = cc.search("\\[[0-9]@\\]", { matchWildcards: true });
-      searchResults.load("items");
-      await context.sync();
-      for (const res of searchResults.items) {
-        res.font.superscript = true;
+    // 采用正则切分，保留占位符以便识别
+    // 匹配 {{REF_(\d+)}}
+    const parts = cleanText.split(/({{REF_\d+}})/g);
+
+    for (const part of parts) {
+      if (!part) continue;
+      
+      const match = part.match(/{{REF_(\d+)}}/);
+      if (match) {
+        const refItem = refMap.find(m => m.placeholder === part);
+        if (refItem) {
+          // 物理注入原始 OOXML，保留所有链接、域、格式
+          cc.insertOoxml(refItem.ooxml, Word.InsertLocation.end);
+        } else {
+          // 如果 AI 伪造了不存在的占位符，当作普通文本
+          cc.insertText(part, Word.InsertLocation.end);
+        }
+      } else {
+        // 普通文本片段
+        cc.insertText(part, Word.InsertLocation.end);
       }
-    } catch {
-      // 忽略部分不支持通配符环境的报错
+      // 每一小块 insert 后可以 sync 一次确保顺序，或者积累一定量再 sync
+      // 为了稳定，我们每一块都 sync
+      await context.sync();
     }
 
-    // 仅删除处理完毕的这个 CC
     cc.delete(true);
     await context.sync();
   });
 }
 
-// ==================== 批量串行执行（含状态展示） ====================
+// ==================== 批量串行执行 ====================
 
-/**
- * 逐段执行：跳过标题 → 每个正文段落轮流给 LLM 处理并依次插入
- * @param {function} processText - (text) => Promise<string>
- * @param {function} onStatus - 状态回调 (type, message)
- * @param {AbortSignal} signal - 取消信号
- * @returns {Promise<{original: string, result: string}>}
- */
 export async function executeAndReplace(processText, onStatus, signal) {
-  if (onStatus) onStatus("processing", "正在分析并切分选区(过滤标题)...");
+  if (onStatus) onStatus("processing", "正在分析选区...");
   
-  const texts = await markSelection();
-
-  if (!texts || texts.length === 0) {
-    throw new Error("请先选中正文段落（已自动排除标题）");
+  const diffMode = storage.getDiffMode();
+  if (diffMode) {
+    await Word.run(async (context) => {
+      context.document.changeTrackingMode = "TrackAll";
+      await context.sync();
+    });
   }
 
-  // 逐段处理以保持独立上下文，防止长文报错，亦能实时更新进度
-  for (let i = 0; i < texts.length; i++) {
+  const results = await markSelection();
+
+  if (!results || results.length === 0) {
+    throw new Error("无有效待处理段落");
+  }
+
+  for (let i = 0; i < results.length; i++) {
     if (signal?.aborted) {
       await clearMarks();
       throw new Error("已取消");
     }
 
     if (onStatus) {
-      onStatus("processing", `AI 润色中 (${i + 1}/${texts.length})...`, true);
+      onStatus("processing", `AI 润色中 (${i + 1}/${results.length})...`, true);
     }
 
-    let result = null;
+    const item = results[i];
+    let aiResult = null;
     try {
-      result = await processText(texts[i]);
+      aiResult = await processText(item.text);
     } catch (err) {
       await clearMarks();
       throw err;
@@ -208,11 +254,10 @@ export async function executeAndReplace(processText, onStatus, signal) {
       throw new Error("已取消");
     }
 
-    if (result && result.trim()) {
-      if (onStatus) onStatus("processing", `回写段落 (${i + 1}/${texts.length})...`, true);
-      await replaceSingleMarkedContent(result.trim());
+    if (aiResult && aiResult.trim()) {
+      if (onStatus) onStatus("processing", `回写中 (${i + 1}/${results.length})...`, true);
+      await replaceSingleMarkedContent(aiResult.trim(), item.refMap);
     } else {
-      // 移除由于空返回而没有被 replaceSingleMarkedContent 清理掉的头部段落标签
       await Word.run(async (context) => {
         const ccs = context.document.contentControls.getByTag(CC_TAG);
         ccs.load("items");
@@ -241,7 +286,5 @@ export async function clearMarks() {
       }
       await context.sync();
     });
-  } catch {
-    // 忽略清理错误
-  }
+  } catch {}
 }
