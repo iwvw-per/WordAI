@@ -115,3 +115,76 @@ git commit -m "feat: 集成学术工具侧边栏 UI"
 ```bash
 git commit -m "feat: 实现参考文献引用分步导航功能"
 ```
+
+---
+
+### 任务 5: 术语一致性检查逻辑 (Terminology Utils)
+
+**Files:**
+- Create: `src/utils/terminology.js`
+
+**步骤 1: 实现术语提取与聚类**
+利用 LLM 接口提取关键字，并在本地进行简单的语义聚类建议。
+
+```javascript
+/**
+ * 扫描全文提取术语并寻找潜在冲突
+ */
+export async function scanTerminologyConflicts() {
+  // 1. 获取全文文本
+  // 2. 分段发送给 LLM 提取核心术语
+  // 3. AI 返回冲突报告：{ standard: "卷积神经网络", aliases: ["卷积感知机", "CNN"] }
+}
+```
+
+**步骤 2: 实现一键替换逻辑**
+调用 Word 的全局替换 API。
+
+**步骤 2: 提交**
+```bash
+git commit -m "feat: 增加术语一致性检查模块"
+```
+
+---
+
+### 任务 6: 图表编号同步逻辑 (Numbering Utils)
+
+**Files:**
+- Create: `src/utils/numbering.js`
+
+**步骤 1: 实现图表标题搜索与重编**
+利用 `search` API 寻找 "图 * " 和 "表 * "。
+
+```javascript
+/**
+ * 重新编排全文图表编号
+ */
+export async function renumberFiguresAndTables() {
+  // 1. 扫描全文图表标题
+  // 2. 按顺序重新编号
+  // 3. 寻找正文中对应的引用并同步更新
+}
+```
+
+**步骤 2: 提交**
+```bash
+git add src/utils/numbering.js
+git commit -m "feat: 增加图表编号同步逻辑"
+```
+
+---
+
+### 任务 7: 摘要与关键词生成逻辑 (Abstract Utils)
+
+**Files:**
+- Create: `src/utils/abstract.js`
+
+**步骤 1: 实现长文档分段摘要**
+调用 LLM 接口处理全文核心段落。
+
+**步骤 2: 提交**
+```bash
+git add src/utils/abstract.js
+git commit -m "feat: 增加摘要与关键词生成功能"
+```
+
