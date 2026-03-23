@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WAI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+</head>
+
+<body>
+  <div id="app">
+    <!-- 顶部 -->
+    <header id="header">
+      <div class="header-title">
+        <span class="logo">⚡</span>
+        <h1>WordAI</h1>
+        <span style="flex:1"></span>
+        <button class="theme-toggle" id="theme-toggle-btn" title="切换主题">🌓</button>
+      </div>
+      <nav class="tab-bar">
+        <button class="tab-btn active" data-tab="actions" id="tab-actions">操作</button>
+        <button class="tab-btn" data-tab="settings" id="tab-settings">设置</button>
+      </nav>
+    </header>
+
+    <!-- 未配置提示 -->
+    <div id="config-banner" class="config-banner hidden">
+      <p>⚙️ 请先完成 API 配置</p>
+      <button class="btn btn-sm btn-primary" id="go-settings-btn">前往设置</button>
+    </div>
+
+    <!-- 操作页 -->
+    <div id="page-actions" class="page active">
+      <section class="section">
+        <div id="action-grid" class="action-grid"></div>
+        <!-- 内联状态条由 JS 动态插入 -->
+      </section>
+
+      <section class="section">
+        <div class="custom-prompt-area">
+          <textarea id="custom-prompt" placeholder="输入自定义指令... (Ctrl+Enter)" rows="2"></textarea>
+          <button class="btn btn-primary btn-block" id="custom-run-btn">
+            <span class="btn-icon">▶</span> 执行
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- 设置页 -->
+    <div id="page-settings" class="page">
+      <section class="section">
+        <h2 class="section-title">API 配置</h2>
+        <div class="form-group">
+          <label class="form-label" for="api-endpoint">API 端点</label>
+          <input type="url" id="api-endpoint" class="form-input" placeholder="https://api.openai.com" />
+          <span class="form-hint">OpenAI 兼容格式（不含 /v1）</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="api-key">API Key</label>
+          <div class="input-with-action">
+            <input type="password" id="api-key" class="form-input" placeholder="sk-..." />
+            <button class="btn btn-sm btn-ghost" id="toggle-key-btn">👁</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="model-select">模型</label>
+          <div class="input-with-action">
+            <select id="model-select" class="form-input">
+              <option value="">-- 获取模型列表 --</option>
+            </select>
+            <button class="btn btn-sm btn-primary" id="fetch-models-btn">🔄</button>
+          </div>
+          <div id="model-status" class="form-hint"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            温度 <span id="temperature-value" class="badge">0.7</span>
+          </label>
+          <input type="range" id="temperature-slider" class="form-range" min="0" max="2" step="0.1" value="0.7" />
+          <div class="range-labels"><span>精确</span><span>创意</span></div>
+        </div>
+        <button class="btn btn-primary btn-block" id="test-connection-btn">
+          <span class="btn-icon">🔗</span> 测试连接
+        </button>
+        <div id="connection-result" class="connection-result hidden"></div>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">跳过规则</h2>
+        <p class="section-desc">处理时自动跳过</p>
+        <div class="skip-rules">
+          <label class="toggle-item"><input type="checkbox" id="skip-headings" checked /><span
+              class="toggle-slider"></span><span class="toggle-label">标题</span></label>
+          <label class="toggle-item"><input type="checkbox" id="skip-tables" checked /><span
+              class="toggle-slider"></span><span class="toggle-label">表格</span></label>
+          <label class="toggle-item"><input type="checkbox" id="skip-formulas" checked /><span
+              class="toggle-slider"></span><span class="toggle-label">公式</span></label>
+          <label class="toggle-item"><input type="checkbox" id="skip-crossrefs" checked /><span
+              class="toggle-slider"></span><span class="toggle-label">交叉引用</span></label>
+          <label class="toggle-item"><input type="checkbox" id="skip-images" checked /><span
+              class="toggle-slider"></span><span class="toggle-label">图片</span></label>
+          <label class="toggle-item"><input type="checkbox" id="skip-toc" checked /><span
+              class="toggle-slider"></span><span class="toggle-label">目录</span></label>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">
+          提示词模板
+          <button class="btn btn-sm btn-ghost" id="add-prompt-btn">＋</button>
+        </h2>
+        <div id="prompt-list" class="prompt-list"></div>
+        <button class="btn btn-ghost btn-block btn-sm" id="reset-prompts-btn">↻ 恢复默认</button>
+      </section>
+    </div>
+  </div>
+
+  <!-- 弹窗 -->
+  <div id="prompt-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content">
+      <h3 id="modal-title">编辑提示词</h3>
+      <div class="form-group">
+        <label class="form-label">名称</label>
+        <input type="text" id="prompt-name" class="form-input" placeholder="如：润色" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">图标</label>
+        <input type="text" id="prompt-icon" class="form-input" placeholder="✨" maxlength="4" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">颜色</label>
+        <input type="color" id="prompt-color" class="form-input-color" value="#6366f1" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">提示词</label>
+        <textarea id="prompt-text" class="form-input" rows="4" placeholder="输入内容..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="save-prompt-btn">保存</button>
+        <button class="btn btn-ghost" id="cancel-prompt-btn">取消</button>
+      </div>
+    </div>
+  </div>
+</body>
+
+</html>
