@@ -81,6 +81,20 @@
         <h2 class="section-title">📚 参考文献</h2>
         <div class="academic-card">
           <button class="btn btn-primary btn-block btn-sm" id="btn-match-refs">匹配占位符 【作者】</button>
+          
+          <!-- 参考文献分步导航 -->
+          <div id="ref-navigator" class="hidden" style="margin-top:8px; padding:8px; background:var(--bg-base); border-radius:var(--radius-sm); border:1px solid var(--border);">
+             <div style="font-size:11px; margin-bottom:4px; color:var(--text-secondary);" id="ref-nav-status">正在匹配第 0/0 处引用</div>
+             <div style="display:flex; gap:4px; margin-bottom:6px;">
+                <input type="text" id="ref-nav-target" class="form-input" style="flex:1; font-size:11px; padding:4px;" readonly>
+             </div>
+             <div style="display:flex; gap:4px;">
+                <button class="btn btn-ghost btn-sm" id="btn-ref-prev" style="padding:2px 8px;">←</button>
+                <button class="btn btn-primary btn-sm" id="btn-ref-confirm" style="flex:1; padding:2px 8px;">确认替换</button>
+                <button class="btn btn-ghost btn-sm" id="btn-ref-next" style="padding:2px 8px;">→</button>
+             </div>
+          </div>
+
           <button class="btn btn-ghost btn-block btn-sm" id="btn-refresh-refs" style="margin-top:4px">一键刷新编号与链接</button>
         </div>
       </section>
