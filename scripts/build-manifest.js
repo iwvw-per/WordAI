@@ -28,7 +28,7 @@ if (!serverUrl || serverUrl.includes("your-server")) {
   process.exit(1);
 }
 
-if (!serverUrl.startsWith("https://")) {
+if (!serverUrl.startsWith("https://") && serverUrl !== "__SERVER_URL__") {
   console.error("❌ 服务器地址必须是 HTTPS！");
   process.exit(1);
 }
