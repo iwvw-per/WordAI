@@ -6,11 +6,23 @@
 const fs = require("fs");
 const path = require("path");
 
-const config = require("../deploy.config.js");
-const serverUrl = config.SERVER_URL.replace(/\/+$/, "");
+// 优先尝试从环境变量读取（适配 Docker 构建），否则读取配置文件
+let serverUrl = process.env.SERVER_URL;
+if (!serverUrl) {
+  try {
+    const config = require("../deploy.config.js");
+    serverUrl = config.SERVER_URL;
+  } catch (e) {
+    // 忽略配置文件缺失
+  }
+}
+
+if (serverUrl) {
+  serverUrl = serverUrl.replace(/\/+$/, "");
+}
 
 if (!serverUrl || serverUrl.includes("your-server")) {
-  console.error("❌ 请先在 deploy.config.js 中设置你的服务器地址！");
+  console.error("❌ 错误：未发现有效的 SERVER_URL！请通过环境变量或 deploy.config.js 设置。");
   process.exit(1);
 }
 
@@ -49,14 +61,16 @@ if not exist "%MANIFEST_PATH%" (
     pause
     exit /b 1
 )
+
+echo  1. Registering developer manifest...
 reg add "HKEY_CURRENT_USER\\Software\\Microsoft\\Office\\16.0\\WEF\\Developer" /v "a1b2c3d4-e5f6-7890-abcd-ef1234567890" /t REG_SZ /d "%MANIFEST_PATH%" /f >nul 2>&1
+
 if %errorlevel% equ 0 (
     echo  [OK] Installation successful!
     echo.
-    echo  How to use:
-    echo    1. Open Word ^(restart if already open^)
-    echo    2. Find the WordAI button in the Home tab
-    echo    3. Click to open the sidebar
+    echo  If the button disappears after restart:
+    echo    1. Go to Word -^> Insert -^> My Add-ins
+    echo    2. Look for "WordAI" under "Developer Add-ins"
     echo.
     echo  To uninstall, run uninstall.bat
 ) else (
@@ -84,6 +98,25 @@ pause
 `;
 fs.writeFileSync(path.join(distDir, "uninstall.bat"), uninstallBat);
 
+// 生成 clear-cache.bat (解决重启消失或脚本不更新的终极方案)
+const clearCacheBat = `@echo off
+echo.
+echo  WordAI - Clearing Office Cache
+echo  ==============================
+echo.
+echo  Closing Word and Excel...
+taskkill /f /im winword.exe >nul 2>&1
+taskkill /f /im excel.exe >nul 2>&1
+echo  Clearing WEF cache folders...
+rmdir /s /q "%LOCALAPPDATA%\\Microsoft\\Office\\16.0\\Wef" >nul 2>&1
+rmdir /s /q "%AppData%\\Microsoft\\Office\\16.0\\WEF" >nul 2>&1
+echo.
+echo  [OK] Cache cleared! Please restart Word.
+echo.
+pause
+`;
+fs.writeFileSync(path.join(distDir, "clear-cache.bat"), clearCacheBat);
+
 console.log(`✅ 生产 manifest 已生成: dist/manifest.xml`);
 console.log(`   服务器地址: ${serverUrl}`);
-console.log(`✅ install.bat / uninstall.bat 已生成`);
+console.log(`✅ install.bat / uninstall.bat / clear-cache.bat 已生成`);

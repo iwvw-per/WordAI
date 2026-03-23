@@ -13,9 +13,9 @@ COPY scripts/ ./scripts/
 COPY src/ ./src/
 COPY manifest.xml ./
 
-# Accept server URL as build arg, generate deploy.config.js on the fly
+# Accept server URL as build arg, map to ENV for the build script
 ARG SERVER_URL=https://localhost:3000
-RUN echo "module.exports = { SERVER_URL: \"${SERVER_URL}\" };" > deploy.config.js
+ENV SERVER_URL=${SERVER_URL}
 
 # Build production bundle
 RUN npm run build:prod
