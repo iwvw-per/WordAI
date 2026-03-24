@@ -24,63 +24,61 @@ export async function markSelection() {
 
     // 获取选区段落与规则
     const skipRules = storage.getSkipRules();
+    // 3. 获取段落
     const selection = context.document.getSelection();
-    const paragraphs = selection.paragraphs;
+    const selRange = selection.getRange(); // 获取稳定的 Range
+    const paragraphs = selRange.paragraphs;
     
-    // 采用更保守的分步加载策略，确保在所有 Word 版本中稳定
     paragraphs.load("items");
     await context.sync();
 
+    let workParagraphs = [];
     if (paragraphs.items.length === 0) {
-      // 备选方案：通过获取选区起点附近的段落集合并查数，避免直接 .getFirst() 导致 ItemNotFound
-      const fallbackPars = selection.getRange("Start").paragraphs;
-      fallbackPars.load("items");
+      // 备选：从起点反推
+      const startRange = selRange.getRange("Start");
+      const pColl = startRange.paragraphs;
+      pColl.load("items");
       await context.sync();
-      
-      if (fallbackPars.items.length > 0) {
-         const p = fallbackPars.items[0];
-         p.load(["text", "style"]);
-         await context.sync();
-         paragraphs.items = [p];
+      if (pColl.items.length > 0) {
+        workParagraphs = [pColl.items[0]];
       }
     } else {
-      // 显式加载每个 items 的属性
-      for (let p of paragraphs.items) {
-        p.load(["text", "style"]);
-      }
-      await context.sync();
+      workParagraphs = paragraphs.items;
     }
 
-    const isTableCheckSupported = Office.context.requirements.isSetSupported("WordApi", "1.3");
-    const paragraphRanges = paragraphs.items.map(p => p.getRange());
-    if (skipRules.tables && isTableCheckSupported) {
-       paragraphRanges.forEach(r => r.load("parentTableCell"));
+    if (workParagraphs.length === 0) return [];
+
+    // 批量加载属性
+    for (let p of workParagraphs) {
+      p.load(["text", "style"]);
     }
-    
     await context.sync();
 
-    const validParagraphs = [];
-    const validRanges = [];
+    const isTableCheckSupported = Office.context.requirements.isSetSupported("WordApi", "1.3");
+    const workRanges = workParagraphs.map(p => p.getRange());
+    if (skipRules.tables && isTableCheckSupported) {
+       workRanges.forEach(r => r.load("parentTableCell"));
+    }
+    await context.sync();
 
-    const isSingleParagraphSelected = paragraphs.items.length === 1;
+    const resultParagraphs = [];
+    const resultRanges = [];
+    const isSingle = workParagraphs.length === 1;
     let validParagraphData = [];
 
-    for (let i = 0; i < paragraphs.items.length; i++) {
-        const p = paragraphs.items[i];
-        const range = paragraphRanges[i];
+    for (let i = 0; i < workParagraphs.length; i++) {
+        const p = workParagraphs[i];
+        const range = workRanges[i];
         let text = "";
         try { text = p.text.trim(); } catch(e) {}
         if (!text) continue;
 
         const styleName = (p.style || "").toString().toLowerCase();
-        // 改进：仅当文本较短且符合编号特征时，才认为可能是标题（防止误杀长列表项）
         const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
-        const isHeadingStyle = styleName.includes("heading") || 
-                             styleName.includes("标题") || 
-                             (styleName.includes("title") && !styleName.includes("subtitle") && !styleName.includes("副标题"));
+        const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
 
         let shouldSkip = false;
-        if (skipRules.headings && !isSingleParagraphSelected) {
+        if (skipRules.headings && !isSingle) {
             if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
         }
 
@@ -91,18 +89,14 @@ export async function markSelection() {
                 }
             } catch(e) {}
         }
-
         validParagraphData.push({ p, range, shouldSkip });
     }
 
-    // --- 核心优化：兜底机制 ---
-    // 如果所有选中的非空段落都被规则过滤掉了，则忽略过滤规则（强制包含它们），确保用户有反馈
     const allSkipped = validParagraphData.length > 0 && validParagraphData.every(d => d.shouldSkip);
-    
     for (const data of validParagraphData) {
         if (!data.shouldSkip || allSkipped) {
-            validParagraphs.push(data.p);
-            validRanges.push(data.range);
+            resultParagraphs.push(data.p);
+            resultRanges.push(data.range);
         }
     }
 
@@ -118,15 +112,14 @@ export async function markSelection() {
       "Section [0-9]@"      // Section 1
     ];
 
-    for (let i = 0; i < validParagraphs.length; i++) {
-      const p = validParagraphs[i];
+    for (let i = 0; i < resultParagraphs.length; i++) {
+      const p = resultParagraphs[i];
       let targetRange;
 
       try {
-        if (validParagraphs.length === 1) {
-          targetRange = selection;
+        if (isSingle) {
+          targetRange = selRange;
         } else {
-          // 为了避免 getRange("Content") 抛出 ItemNotFound，直接使用完整的 paragraph range
           targetRange = p.getRange();
         }
 
