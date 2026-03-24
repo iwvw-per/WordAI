@@ -15,10 +15,13 @@ export async function renumberFiguresAndTables() {
     return await Word.run(async (context) => {
         const body = context.document.body;
         
-        // 1. 扫描图、表标题 (支持中文/英文/空格/冒号等变体)
-        // 注意：搜索 * 会匹配到结尾，策略是寻找固定前缀后的第一个数字
-        const figResults = body.search("图 [0-9]@", { matchWildcards: true });
-        const tabResults = body.search("表 [0-9]@", { matchWildcards: true });
+        // 1. 扫描图、表标题 (支持 "图 1" 和 "图1" 等变体)
+        // 使用通配符：图字 + 可选空格 + 一个或多个数字
+        const figResults = body.search("图[ ]@[0-9]@", { matchWildcards: true });
+        const tabResults = body.search("表[ ]@[0-9]@", { matchWildcards: true });
+        // 如果通配符匹配不全，再尝试直接搜索（Word Wildcards 限制较多）
+        const figResultsBasic = body.search("图[0-9]@", { matchWildcards: true });
+        const tabResultsBasic = body.search("表[0-9]@", { matchWildcards: true });
         
         figResults.load("items");
         tabResults.load("items");

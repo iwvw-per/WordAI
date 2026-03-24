@@ -30,9 +30,9 @@ export async function parseBibliography() {
 
         if (searchResults.items.length === 0) return [];
 
-        // 获取标题后的范围
+        // 获取标题后的所有范围直到文档结束
         const lastTitle = searchResults.items[searchResults.items.length - 1];
-        const bibRange = lastTitle.getNextTextRange("End");
+        const bibRange = lastTitle.expandTo(body.getRange("End"));
         bibRange.load("text");
         await context.sync();
 
