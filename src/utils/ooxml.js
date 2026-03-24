@@ -22,13 +22,31 @@ export async function markSelection() {
     }
     await context.sync();
 
-    // 获取选区段落
+    // 获取选区段落与规则
     const skipRules = storage.getSkipRules();
     const selection = context.document.getSelection();
     const paragraphs = selection.paragraphs;
     
-    paragraphs.load(["items/style", "items/text"]);
+    // 采用更保守的分步加载策略，确保在所有 Word 版本中稳定
+    paragraphs.load("items");
     await context.sync();
+
+    if (paragraphs.items.length === 0) {
+      // 备选方案：如果是单点选区，尝试获取当前所在的段落
+      const parentParagraph = selection.getRange("Start").paragraphs.getFirst();
+      parentParagraph.load(["text", "style"]);
+      await context.sync();
+      if (parentParagraph) {
+         // 手动构造一个类似 items 的结构
+         paragraphs.items = [parentParagraph];
+      }
+    } else {
+      // 显式加载每个 items 的属性
+      for (let p of paragraphs.items) {
+        p.load(["text", "style"]);
+      }
+      await context.sync();
+    }
 
     const isTableCheckSupported = Office.context.requirements.isSetSupported("WordApi", "1.3");
     const paragraphRanges = paragraphs.items.map(p => p.getRange());
@@ -36,7 +54,7 @@ export async function markSelection() {
        paragraphRanges.forEach(r => r.load("parentTableCell"));
     }
     
-    try { await context.sync(); } catch (e) {}
+    await context.sync();
 
     const validParagraphs = [];
     const validRanges = [];
