@@ -13,123 +13,129 @@ const CC_TAG = "wordai_target";
 export async function markSelection() {
   let results = [];
   await Word.run(async (context) => {
-    // 清理之前的标记
-    const existing = context.document.contentControls.getByTag(CC_TAG);
-    existing.load("items");
-    await context.sync();
-    for (const cc of existing.items) {
-      cc.delete(true);
+    // STEP-1: 清理之前的标记
+    console.log("[WordAI] STEP-1: 清理旧标记");
+    try {
+      const existing = context.document.contentControls.getByTag(CC_TAG);
+      existing.load("items");
+      await context.sync();
+      for (const cc of existing.items) cc.delete(true);
+      await context.sync();
+    } catch (e) {
+      console.error("[WordAI] STEP-1 失败:", e.message);
     }
-    await context.sync();
 
-    // 获取选区段落与规则
+    // STEP-2: 获取选区与段落
+    console.log("[WordAI] STEP-2: 获取选区段落");
     const skipRules = storage.getSkipRules();
-    // 3. 获取段落
     const selection = context.document.getSelection();
-    const selRange = selection.getRange(); // 获取稳定的 Range
-    const paragraphs = selRange.paragraphs;
-    
+    selection.load("text");
+    await context.sync();
+    console.log("[WordAI] STEP-2: 选区文本长度 =", selection.text?.length);
+
+    const paragraphs = selection.paragraphs;
     paragraphs.load("items");
     await context.sync();
+    console.log("[WordAI] STEP-2: 段落数 =", paragraphs.items.length);
 
-    let workParagraphs = [];
-    if (paragraphs.items.length === 0) {
-      // 备选：从起点反推
-      const startRange = selRange.getRange("Start");
-      const pColl = startRange.paragraphs;
-      pColl.load("items");
-      await context.sync();
-      if (pColl.items.length > 0) {
-        workParagraphs = [pColl.items[0]];
+    // STEP-3: 构建工作段落列表
+    let workParagraphs = paragraphs.items;
+    if (workParagraphs.length === 0) {
+      console.log("[WordAI] STEP-3: 段落为空，尝试 fallback");
+      try {
+        const startRange = selection.getRange("Start");
+        const pColl = startRange.paragraphs;
+        pColl.load("items");
+        await context.sync();
+        if (pColl.items.length > 0) {
+          workParagraphs = [pColl.items[0]];
+        }
+      } catch (e) {
+        console.error("[WordAI] STEP-3 fallback 失败:", e.message);
       }
-    } else {
-      workParagraphs = paragraphs.items;
     }
 
-    if (workParagraphs.length === 0) return [];
+    if (workParagraphs.length === 0) {
+      console.warn("[WordAI] 没有可工作的段落，退出");
+      return;
+    }
 
-    // 批量加载属性
+    // STEP-4: 加载段落属性
+    console.log("[WordAI] STEP-4: 加载段落属性，段落数 =", workParagraphs.length);
     for (let p of workParagraphs) {
       p.load(["text", "style"]);
     }
     await context.sync();
 
-    const isTableCheckSupported = Office.context.requirements.isSetSupported("WordApi", "1.3");
-    const workRanges = workParagraphs.map(p => p.getRange());
-    if (skipRules.tables && isTableCheckSupported) {
-       workRanges.forEach(r => r.load("parentTableCell"));
-    }
-    await context.sync();
-
-    const resultParagraphs = [];
-    const resultRanges = [];
+    // STEP-5: 过滤
+    console.log("[WordAI] STEP-5: 过滤段落");
     const isSingle = workParagraphs.length === 1;
-    let validParagraphData = [];
+    const resultParagraphs = [];
 
     for (let i = 0; i < workParagraphs.length; i++) {
-        const p = workParagraphs[i];
-        const range = workRanges[i];
+      const p = workParagraphs[i];
+      let text = "";
+      try { text = p.text.trim(); } catch(e) {}
+      if (!text) continue;
+
+      const styleName = (p.style || "").toString().toLowerCase();
+      const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
+      const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
+
+      let shouldSkip = false;
+      if (skipRules.headings && !isSingle) {
+        if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
+      }
+
+      // 兜底：如果全部被跳过，不跳过任何
+      if (!shouldSkip) {
+        resultParagraphs.push(p);
+      }
+    }
+
+    // 兜底机制
+    if (resultParagraphs.length === 0 && workParagraphs.length > 0) {
+      console.log("[WordAI] STEP-5: 全部被过滤，启用兜底");
+      for (let p of workParagraphs) {
         let text = "";
         try { text = p.text.trim(); } catch(e) {}
-        if (!text) continue;
-
-        const styleName = (p.style || "").toString().toLowerCase();
-        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
-        const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
-
-        let shouldSkip = false;
-        if (skipRules.headings && !isSingle) {
-            if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
-        }
-
-        if (skipRules.tables && isTableCheckSupported) {
-            try { 
-                if (range.parentTableCell && !range.parentTableCell.isNullObject) {
-                    shouldSkip = true;
-                }
-            } catch(e) {}
-        }
-        validParagraphData.push({ p, range, shouldSkip });
+        if (text) resultParagraphs.push(p);
+      }
     }
 
-    const allSkipped = validParagraphData.length > 0 && validParagraphData.every(d => d.shouldSkip);
-    for (const data of validParagraphData) {
-        if (!data.shouldSkip || allSkipped) {
-            resultParagraphs.push(data.p);
-            resultRanges.push(data.range);
-        }
-    }
+    console.log("[WordAI] STEP-5: 有效段落数 =", resultParagraphs.length);
 
-    // 搜索引用用的通配符模式（Word 语法）
+    // STEP-6: 搜索引用并标记
     const refSearches = [
-      "\\[[0-9.,\\- ]@\\]", // [1], [1-3], [1, 2]
-      "图 [0-9]@",           // 图 1
-      "表 [0-9]@",           // 表 1
-      "式([0-9]@)",         // 式(1)
-      "Fig. [0-9]@",        // Fig. 1
-      "Figure [0-9]@",      // Figure 1
-      "Table [0-9]@",       // Table 1
-      "Section [0-9]@"      // Section 1
+      "\\[[0-9.,\\- ]@\\]",
+      "图 [0-9]@",
+      "表 [0-9]@",
+      "Fig. [0-9]@",
+      "Figure [0-9]@",
+      "Table [0-9]@"
     ];
 
     for (let i = 0; i < resultParagraphs.length; i++) {
       const p = resultParagraphs[i];
-      let targetRange;
 
       try {
+        // STEP-6a: 获取 targetRange
+        let targetRange;
         if (isSingle) {
-          targetRange = selRange;
+          targetRange = selection.getRange();
         } else {
           targetRange = p.getRange();
         }
 
+        console.log(`[WordAI] STEP-6: 段落 ${i+1}/${resultParagraphs.length}`);
         targetRange.load("text");
         await context.sync();
 
         const text = targetRange.text.trim();
         if (!text) continue;
+        console.log(`[WordAI] STEP-6: 段落文本 = "${text.substring(0, 30)}..."`);
 
-        // --- 核心：提取范围内的引用片段 OOXML ---
+        // STEP-6b: 提取引用
         const refMap = [];
         for (const pattern of refSearches) {
           try {
@@ -137,42 +143,38 @@ export async function markSelection() {
             matches.load("items");
             await context.sync();
             for (const matchRange of matches.items) {
-              matchRange.load(["text", "address"]); 
-              const ooxml = matchRange.getOoxml();
-              await context.sync();
-              refMap.push({
-                text: matchRange.text,
-                ooxml: ooxml.value,
-                // 用于排序，确保占位符顺序与文中一致
-                address: matchRange.address 
-              });
+              try {
+                matchRange.load(["text"]);
+                const ooxml = matchRange.getOoxml();
+                await context.sync();
+                refMap.push({
+                  text: matchRange.text,
+                  ooxml: ooxml.value
+                });
+              } catch(e) {
+                console.warn(`[WordAI] STEP-6b: 单个引用提取失败:`, e.message);
+              }
             }
-          } catch (e) {}
+          } catch (e) {
+            // search pattern 不匹配很正常，静默跳过
+          }
         }
 
-        // 按文中出现位置排序（根据 Word 的 range address 启发式排序，或者简单依靠 search 结果）
-        // 这里简化处理：search 结果通常已经是有序的。如果不放心，可以根据 index 排序。
-        // 由于我们将 refMap 用于 tokenize，我们需要确保它唯一
-        
+        // STEP-6c: token 化
         let tokenizedText = text;
         const finalRefMap = [];
-        
-        // 倒序替换以防索引偏移（或者使用特殊 Token 避免二次匹配）
-        // 这里我们直接用 detokenizeReferences 的逻辑，提前准备好 finalRefMap
-        // 为确保精准，我们按长度从长到短匹配（防止 [1-3] 被匹配为 [1]）
         const uniqueRefs = [];
         refMap.sort((a, b) => b.text.length - a.text.length).forEach(item => {
-           if (!uniqueRefs.find(u => u.text === item.text)) {
-              uniqueRefs.push(item);
-           }
+           if (!uniqueRefs.find(u => u.text === item.text)) uniqueRefs.push(item);
         });
-
         uniqueRefs.forEach((item, idx) => {
           const placeholder = `{{REF_${idx}}}`;
           tokenizedText = tokenizedText.split(item.text).join(placeholder);
           finalRefMap.push({ placeholder, ooxml: item.ooxml, original: item.text });
         });
 
+        // STEP-6d: 插入 ContentControl
+        console.log(`[WordAI] STEP-6d: 插入 CC for 段落 ${i+1}`);
         const cc = targetRange.insertContentControl();
         cc.tag = CC_TAG;
         cc.appearance = Word.ContentControlAppearance.hidden;
@@ -182,8 +184,9 @@ export async function markSelection() {
           text: tokenizedText,
           refMap: finalRefMap
         });
+        console.log(`[WordAI] STEP-6: 段落 ${i+1} 完成 ✓`);
       } catch (err) {
-        console.warn("Paragraph marking failed:", err);
+        console.error(`[WordAI] STEP-6: 段落 ${i+1} 失败:`, err.message, err.debugInfo || "");
       }
     }
   });
