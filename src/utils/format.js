@@ -1,33 +1,68 @@
 /**
- * format.js - Word 格式操作工具类
+ * 将简单的 Markdown 文本转换为 Word 富文本并插入指定位置
+ * 支持：### 标题, **加粗**, 1. 列表, 以及换行
+ * @param {Word.Range | Word.Body} target - 插入目标
+ * @param {string} markdown - 待转换的 Markdown 文本
+ * @param {string} location - 插入位置 ("Start", "End", "Replace")
  */
-
-/**
- * 在选区中搜索并高亮关键字
- * @param {Array<string>} keywords - 关键字列表
- * @param {string} color - 高亮颜色（Hex）
- */
-export async function highlightKeywords(keywords, color = "#2563eb") {
+export async function insertMarkdownAsRichText(target, markdown, location = "End") {
   await Word.run(async (context) => {
-    const selection = context.document.getSelection();
+    // 处理 literal \n 字符串
+    const cleanMarkdown = markdown.replace(/\\n/g, "\n");
+    const lines = cleanMarkdown.split("\n");
     
-    for (const keyword of keywords) {
-      if (!keyword || keyword.length < 2) continue; // 忽略过短或空关键字
-      
-      const searchResults = selection.search(keyword, { 
-        matchCase: false,
-        matchWildcards: false
-      });
-      
-      searchResults.load("items");
-      await context.sync();
-      
-      searchResults.items.forEach((range) => {
-        range.font.bold = true;
-        range.font.color = color;
-      });
+    // 如果是替换模式，先清空内容
+    if (location === "Replace") {
+      target.insertText("", "Replace");
     }
-    
-    await context.sync();
+
+    let currentContainer = target;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      if (!line) {
+        // 插入空行
+        currentContainer.insertParagraph("", "End");
+        continue;
+      }
+
+      let insertedRange;
+      
+      // 1. 处理标题 (### Title)
+      if (line.startsWith("###")) {
+        const titleText = line.replace(/^###\s*/, "");
+        insertedRange = currentContainer.insertParagraph(titleText, "End");
+        insertedRange.font.bold = true;
+        insertedRange.font.size = 14;
+        insertedRange.spacingBefore = 12;
+      } 
+      else if (line.startsWith("##")) {
+        const titleText = line.replace(/^##\s*/, "");
+        insertedRange = currentContainer.insertParagraph(titleText, "End");
+        insertedRange.font.bold = true;
+        insertedRange.font.size = 16;
+        insertedRange.spacingBefore = 14;
+      }
+      // 2. 处理加粗 (**Text**) - 简化版：仅处理全行加粗或通过正则二次处理
+      else {
+        // 基础段落插入
+        insertedRange = currentContainer.insertParagraph("", "End");
+        
+        // 分解行内格式
+        // 匹配 **...**
+        const parts = line.split(/(\*\*.*?\*\*)/g);
+        for (const part of parts) {
+          if (part.startsWith("**") && part.endsWith("**")) {
+            const boldText = part.substring(2, part.length - 2);
+            const run = insertedRange.insertText(boldText, "End");
+            run.font.bold = true;
+          } else {
+            insertedRange.insertText(part, "End");
+          }
+        }
+      }
+      
+      await context.sync();
+    }
   });
 }

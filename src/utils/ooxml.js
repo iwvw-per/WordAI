@@ -120,17 +120,14 @@ export async function markSelection() {
 
     for (let i = 0; i < validParagraphs.length; i++) {
       const p = validParagraphs[i];
-      let targetRange = validRanges[i];
+      let targetRange;
 
       try {
         if (validParagraphs.length === 1) {
           targetRange = selection;
-        } else if (i === 0) {
-          targetRange = selection.getRange("Start").expandTo(p.getRange("Content").getRange("End"));
-        } else if (i === validParagraphs.length - 1) {
-          targetRange = p.getRange("Content").getRange("Start").expandTo(selection.getRange("End"));
         } else {
-          targetRange = p.getRange("Content");
+          // 为了避免 getRange("Content") 抛出 ItemNotFound，直接使用完整的 paragraph range
+          targetRange = p.getRange();
         }
 
         targetRange.load("text");
@@ -218,46 +215,68 @@ async function replaceSingleMarkedContent(newText, refMap) {
     const cc = ccs.items[0];
     
     // 1. 预处理：处理 literal \n 和 Markdown 标记
-    // 为了保持格式保留引擎的稳定性，我们这里做一个简单的 Markdown 清理
-    // 如果 AI 返回了 ### 标题或 **加粗**，我们将其转换为纯文本或简单格式
     let processedText = newText.replace(/\\n/g, "\n");
-    // 去掉开头的 ### 等标记
-    processedText = processedText.replace(/^#{1,6}\s?/gm, "");
-    
-    const cleanText = processedText.split(/\r?\n/).filter(l => l.trim()).join("\n");
+    const lines = processedText.split(/\r?\n/);
     
     // 清空内容，准备注入
     cc.insertText("", Word.InsertLocation.replace);
     await context.sync();
 
-    // 采用正则切分，保留占位符以便识别
-    const parts = cleanText.split(/({{REF_\d+}})/g);
+    let isFirstLine = true;
 
-    for (const part of parts) {
-      if (!part) continue;
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
       
-      const match = part.match(/{{REF_(\d+)}}/);
-      if (match) {
-        const refItem = refMap.find(m => m.placeholder === part);
-        if (refItem) {
-          cc.insertOoxml(refItem.ooxml, Word.InsertLocation.end);
-        } else {
-          cc.insertText(part, Word.InsertLocation.end);
+      // 处理空行
+      if (!line) {
+        if (!isFirstLine && i !== lines.length - 1) {
+          cc.insertParagraph("", Word.InsertLocation.end);
+          await context.sync();
         }
-      } else {
-        // 进一步处理行内加粗 **text**
-        const subParts = part.split(/(\*\*.*?\*\*)/g);
-        for (const subPart of subParts) {
-          if (subPart.startsWith("**") && subPart.endsWith("**")) {
-            const boldText = subPart.substring(2, subPart.length - 2);
-            const run = cc.insertText(boldText, Word.InsertLocation.end);
-            run.font.bold = true;
+        continue;
+      }
+
+      // 清理 Markdown 标题和列表标记
+      line = line.replace(/^#{1,6}\s+/, "");
+      // 如果不是普通的带数字列表（由于 Word 机制，列表最好转纯文本），清理掉破折号
+      line = line.replace(/^-\s+/, "");
+
+      // 插入换行
+      if (!isFirstLine) {
+        cc.insertParagraph("", Word.InsertLocation.end);
+        await context.sync();
+      }
+      isFirstLine = false;
+
+      // 采用正则切分，保留占位符以便识别
+      const parts = line.split(/({{REF_\d+}})/g);
+
+      for (const part of parts) {
+        if (!part) continue;
+        
+        const match = part.match(/{{REF_(\d+)}}/);
+        if (match) {
+          const refItem = refMap.find(m => m.placeholder === part);
+          if (refItem) {
+            cc.insertOoxml(refItem.ooxml, Word.InsertLocation.end);
           } else {
-            cc.insertText(subPart, Word.InsertLocation.end);
+            cc.insertText(part, Word.InsertLocation.end);
+          }
+        } else {
+          // 进一步处理行内加粗 **text**
+          const subParts = part.split(/(\*\*.*?\*\*)/g);
+          for (const subPart of subParts) {
+            if (subPart.startsWith("**") && subPart.endsWith("**")) {
+              const boldText = subPart.substring(2, subPart.length - 2);
+              const run = cc.insertText(boldText, Word.InsertLocation.end);
+              run.font.bold = true;
+            } else {
+              cc.insertText(subPart, Word.InsertLocation.end);
+            }
           }
         }
+        await context.sync();
       }
-      await context.sync();
     }
 
     cc.delete(true);
