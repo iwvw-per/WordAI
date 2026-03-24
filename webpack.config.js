@@ -44,6 +44,11 @@ module.exports = async (env, options) => {
             to: "assets",
             noErrorOnMissing: true,
           },
+          {
+            from: "src/assets/favicon.png",
+            to: "favicon.png",
+            noErrorOnMissing: true,
+          },
         ],
       }),
     ],
