@@ -14,124 +14,136 @@ export async function markSelection() {
   let results = [];
   await Word.run(async (context) => {
     try {
-      const existing = context.document.contentControls.getByTag(CC_TAG);
-      existing.load("items");
+      // ===== 第一步：获取选区段落（在清理旧CC之前，防止选区失效）=====
+      const skipRules = storage.getSkipRules();
+      const selection = context.document.getSelection();
+      // 注意：getSelection() 已经返回 Range，不要再调用 .getRange()
+      const paragraphs = selection.paragraphs;
+      paragraphs.load("items");
       await context.sync();
-      for (const cc of existing.items) cc.delete(true);
-      await context.sync();
-    } catch (e) {}
 
-    const skipRules = storage.getSkipRules();
-    const selection = context.document.getSelection();
-    const selRange = selection.getRange();
-    const paragraphs = selRange.paragraphs;
-    
-    paragraphs.load("items");
-    await context.sync();
-
-    let workParagraphs = paragraphs.items;
-    if (workParagraphs.length === 0) {
-      try {
-        const startRange = selection.getRange("Start");
-        const pColl = startRange.paragraphs;
-        pColl.load("items");
-        await context.sync();
-        if (pColl.items.length > 0) {
-          workParagraphs = [pColl.items[0]];
-        }
-      } catch (e) {}
-    }
-
-    if (workParagraphs.length === 0) return;
-
-    for (let p of workParagraphs) {
-      p.load(["text", "style"]);
-    }
-    await context.sync();
-
-    const isSingle = workParagraphs.length === 1;
-    const resultParagraphs = [];
-
-    for (let i = 0; i < workParagraphs.length; i++) {
-      const p = workParagraphs[i];
-      let text = "";
-      try { text = p.text.trim(); } catch(e) {}
-      if (!text) continue;
-
-      const styleName = (p.style || "").toString().toLowerCase();
-      const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
-      const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
-
-      let shouldSkip = false;
-      if (skipRules.headings && !isSingle) {
-        if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
+      let workParagraphs = [...paragraphs.items]; // 复制到本地数组
+      if (workParagraphs.length === 0) {
+        try {
+          const startPars = selection.getRange("Start").paragraphs;
+          startPars.load("items");
+          await context.sync();
+          if (startPars.items.length > 0) {
+            workParagraphs = [startPars.items[0]];
+          }
+        } catch (e) {}
       }
-      if (!shouldSkip) resultParagraphs.push(p);
-    }
 
-    if (resultParagraphs.length === 0 && workParagraphs.length > 0) {
+      if (workParagraphs.length === 0) return;
+
+      // 加载段落属性
       for (let p of workParagraphs) {
+        p.load(["text", "style"]);
+      }
+      await context.sync();
+
+      // ===== 第二步：清理旧标记（选区信息已安全缓存）=====
+      try {
+        const existing = context.document.contentControls.getByTag(CC_TAG);
+        existing.load("items");
+        await context.sync();
+        for (const cc of existing.items) cc.delete(true);
+        await context.sync();
+      } catch (e) {}
+
+      // ===== 第三步：过滤段落 =====
+      const isSingle = workParagraphs.length === 1;
+      const resultParagraphs = [];
+
+      for (let i = 0; i < workParagraphs.length; i++) {
+        const p = workParagraphs[i];
         let text = "";
         try { text = p.text.trim(); } catch(e) {}
-        if (text) resultParagraphs.push(p);
-      }
-    }
-
-    const refSearches = [
-      "\\[[0-9.,\\- ]@\\]",
-      "图 [0-9]@",
-      "表 [0-9]@",
-      "Fig. [0-9]@",
-      "Figure [0-9]@",
-      "Table [0-9]@"
-    ];
-
-    for (let i = 0; i < resultParagraphs.length; i++) {
-      const p = resultParagraphs[i];
-      try {
-        let targetRange = isSingle ? selection.getRange() : p.getRange();
-        targetRange.load("text");
-        await context.sync();
-
-        const text = targetRange.text.trim();
         if (!text) continue;
 
-        const refMap = [];
-        for (const pattern of refSearches) {
-          try {
-            const matches = targetRange.search(pattern, { matchWildcards: true });
-            matches.load("items");
-            await context.sync();
-            for (const matchRange of matches.items) {
-              try {
-                matchRange.load(["text"]);
-                const ooxml = matchRange.getOoxml();
-                await context.sync();
-                refMap.push({ text: matchRange.text, ooxml: ooxml.value });
-              } catch(e) {}
-            }
-          } catch (e) {}
+        const styleName = (p.style || "").toString().toLowerCase();
+        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
+        const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
+
+        let shouldSkip = false;
+        if (skipRules.headings && !isSingle) {
+          if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
         }
+        if (!shouldSkip) resultParagraphs.push(p);
+      }
 
-        let tokenizedText = text;
-        const finalRefMap = [];
-        const uniqueRefs = [];
-        refMap.sort((a, b) => b.text.length - a.text.length).forEach(item => {
-           if (!uniqueRefs.find(u => u.text === item.text)) uniqueRefs.push(item);
-        });
-        uniqueRefs.forEach((item, idx) => {
-          const placeholder = `{{REF_${idx}}}`;
-          tokenizedText = tokenizedText.split(item.text).join(placeholder);
-          finalRefMap.push({ placeholder, ooxml: item.ooxml, original: item.text });
-        });
+      // 兜底：全部被过滤则强制包含
+      if (resultParagraphs.length === 0 && workParagraphs.length > 0) {
+        for (let p of workParagraphs) {
+          let text = "";
+          try { text = p.text.trim(); } catch(e) {}
+          if (text) resultParagraphs.push(p);
+        }
+      }
 
-        const cc = targetRange.insertContentControl();
-        cc.tag = CC_TAG;
-        cc.appearance = Word.ContentControlAppearance.hidden;
-        await context.sync();
+      // ===== 第四步：搜索引用并标记 =====
+      const refSearches = [
+        "\\[[0-9.,\\- ]@\\]",
+        "图 [0-9]@",
+        "表 [0-9]@",
+        "Fig. [0-9]@",
+        "Figure [0-9]@",
+        "Table [0-9]@"
+      ];
 
-        results.push({ text: tokenizedText, refMap: finalRefMap });
-      } catch (err) {}
+      for (let i = 0; i < resultParagraphs.length; i++) {
+        const p = resultParagraphs[i];
+        try {
+          // 直接使用段落自身的 range，不调用 getRange()
+          // 对于单段落场景，也使用段落 range 而非 selection
+          p.load("text");
+          await context.sync();
+
+          const text = p.text.trim();
+          if (!text) continue;
+
+          const refMap = [];
+          for (const pattern of refSearches) {
+            try {
+              const matches = p.search(pattern, { matchWildcards: true });
+              matches.load("items");
+              await context.sync();
+              for (const matchRange of matches.items) {
+                try {
+                  matchRange.load(["text"]);
+                  const ooxml = matchRange.getOoxml();
+                  await context.sync();
+                  refMap.push({ text: matchRange.text, ooxml: ooxml.value });
+                } catch(e) {}
+              }
+            } catch (e) {}
+          }
+
+          let tokenizedText = text;
+          const finalRefMap = [];
+          const uniqueRefs = [];
+          refMap.sort((a, b) => b.text.length - a.text.length).forEach(item => {
+             if (!uniqueRefs.find(u => u.text === item.text)) uniqueRefs.push(item);
+          });
+          uniqueRefs.forEach((item, idx) => {
+            const placeholder = `{{REF_${idx}}}`;
+            tokenizedText = tokenizedText.split(item.text).join(placeholder);
+            finalRefMap.push({ placeholder, ooxml: item.ooxml, original: item.text });
+          });
+
+          // 使用段落自身插入 ContentControl，而非 targetRange
+          const cc = p.insertContentControl();
+          cc.tag = CC_TAG;
+          cc.appearance = Word.ContentControlAppearance.hidden;
+          await context.sync();
+
+          results.push({ text: tokenizedText, refMap: finalRefMap });
+        } catch (err) {
+          console.warn("Paragraph marking failed:", err);
+        }
+      }
+    } catch (outerErr) {
+      console.error("markSelection top-level error:", outerErr);
     }
   });
   return results;
