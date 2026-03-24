@@ -684,26 +684,41 @@ function bindAcademicEvents() {
     try {
       showInlineStatus("processing", "正在扫描占位符与文献列表...");
       
-      // 1. 同时扫描占位符和解析列表
-      const [results, bibliography] = await Promise.all([
-        refUtils.scanPlaceholders(),
-        refUtils.parseBibliography()
-      ]);
+      await Word.run(async (context) => {
+        // 1. 同时扫描占位符和解析列表
+        const [results, bibliography] = await Promise.all([
+          refUtils.scanPlaceholders(),
+          refUtils.parseBibliography()
+        ]);
 
-      if (results.items.length === 0) {
-        showInlineStatus("done", "未发现占位符");
+        if (results.items.length === 0) {
+          showInlineStatus("done", "未发现占位符");
+          setTimeout(() => hideInlineStatus(), 2000);
+          return;
+        }
+
+        // 2. 清理旧标记并为每个占位符包裹 CC 以便追踪
+        const oldCCs = context.document.contentControls.getByTag("wordai_ref_placeholder");
+        oldCCs.load("items");
+        await context.sync();
+        for (let cc of oldCCs.items) cc.delete(true);
+
+        for (let i = 0; i < results.items.length; i++) {
+          const cc = results.items[i].insertContentControl();
+          cc.tag = "wordai_ref_placeholder";
+          cc.appearance = "Hidden";
+        }
+        await context.sync();
+        
+        refNavState.itemsCount = results.items.length;
+        refNavState.bibliography = bibliography;
+        refNavState.currentIndex = 0;
+        
+        document.getElementById("ref-navigator").classList.remove("hidden");
+        await updateRefNavigator();
+        showInlineStatus("done", `发现 ${results.items.length} 处引用，文献库 ${bibliography.length} 条 ✓`);
         setTimeout(() => hideInlineStatus(), 2000);
-        return;
-      }
-      
-      refNavState.items = results.items;
-      refNavState.bibliography = bibliography; // 保存到状态
-      refNavState.currentIndex = 0;
-      
-      document.getElementById("ref-navigator").classList.remove("hidden");
-      await updateRefNavigator();
-      showInlineStatus("done", `发现 ${results.items.length} 处引用，文献库 ${bibliography.length} 条 ✓`);
-      setTimeout(() => hideInlineStatus(), 2000);
+      });
     } catch (err) {
       showInlineStatus("error", err.message);
       setTimeout(() => hideInlineStatus(), 2000);
@@ -724,40 +739,7 @@ function bindAcademicEvents() {
     }
   });
 
-  document.getElementById("btn-ref-confirm")?.addEventListener("click", async () => {
-    try {
-      const currentItem = refNavState.items[refNavState.currentIndex];
-      const suggestions = refNavState.suggestions || [];
-      const bestMatch = suggestions[0];
-
-      if (!bestMatch) {
-         showToast("未找到匹配的参考文献，请手动处理", "warning");
-         return;
-      }
-
-      await Word.run(async (context) => {
-        // 将占位符替换为编号格式 [N]
-        const replacement = `[${bestMatch.id}]`;
-        currentItem.insertText(replacement, "Replace");
-        // 应用简单样式标记已处理
-        currentItem.font.color = "#2563eb";
-        await context.sync();
-      });
-
-      showToast(`已匹配到: ${bestMatch.text.substring(0, 20)}...`, "success");
-
-      // 自动下一个
-      if (refNavState.currentIndex < refNavState.items.length - 1) {
-        refNavState.currentIndex++;
-        updateRefNavigator();
-      } else {
-        document.getElementById("ref-navigator").classList.add("hidden");
-        showToast("所有引用匹配完成", "success");
-      }
-    } catch (err) {
-      showToast(err.message, "error");
-    }
-  });
+  document.getElementById("btn-ref-confirm")?.addEventListener("click", handleRefConfirm);
 
   // --- 写作辅助 ---
   document.getElementById("btn-term-check")?.addEventListener("click", async () => {
@@ -853,22 +835,29 @@ function bindAcademicEvents() {
 }
 
 async function updateRefNavigator() {
-  if (refNavState.items.length === 0) return;
   const status = document.getElementById("ref-nav-status");
   const target = document.getElementById("ref-nav-target");
   
-  const currentItem = refNavState.items[refNavState.currentIndex];
-  currentItem.load("text");
-  
   await Word.run(async (context) => {
-    currentItem.select();
+    const ccs = context.document.contentControls.getByTag("wordai_ref_placeholder");
+    ccs.load("items");
     await context.sync();
 
-    const text = currentItem.text;
+    if (ccs.items.length === 0 || refNavState.currentIndex >= ccs.items.length) {
+      document.getElementById("ref-navigator").classList.add("hidden");
+      return;
+    }
+
+    const currentCC = ccs.items[refNavState.currentIndex];
+    currentCC.load("text");
+    currentCC.select();
+    await context.sync();
+
+    const text = currentCC.text;
     const suggestions = refUtils.matchPlaceholderToBibliography(text, refNavState.bibliography || []);
     refNavState.suggestions = suggestions;
 
-    status.textContent = `第 ${refNavState.currentIndex + 1}/${refNavState.items.length} 处: ${text}`;
+    status.textContent = `第 ${refNavState.currentIndex + 1}/${ccs.items.length} 处: ${text}`;
     
     if (suggestions.length > 0) {
       target.value = `建议匹配: [${suggestions[0].id}] ${suggestions[0].text.substring(0, 50)}...`;
@@ -878,4 +867,45 @@ async function updateRefNavigator() {
       target.style.color = "var(--error)";
     }
   });
+}
+
+// 确认按钮逻辑（需要在外面绑定，或在此处根据需要修改按钮监听器）
+// 之前是在 init 中绑定的，这里我补充一下针对 CC 的逻辑修改
+async function handleRefConfirm() {
+  try {
+    const suggestions = refNavState.suggestions || [];
+    const bestMatch = suggestions[0];
+
+    if (!bestMatch) {
+      showToast("未找到匹配的参考文献，请手动处理", "warning");
+      return;
+    }
+
+    await Word.run(async (context) => {
+      const ccs = context.document.contentControls.getByTag("wordai_ref_placeholder");
+      ccs.load("items");
+      await context.sync();
+
+      if (ccs.items.length > refNavState.currentIndex) {
+        const currentCC = ccs.items[refNavState.currentIndex];
+        const replacement = `[${bestMatch.id}]`;
+        const run = currentCC.insertText(replacement, "Replace");
+        run.font.color = "#2563eb";
+        currentCC.delete(false); // 仅删除容器，保留文字
+        await context.sync();
+
+        showToast(`已匹配到: ${bestMatch.text.substring(0, 20)}...`, "success");
+
+        if (refNavState.currentIndex < ccs.items.length - 1) {
+          // 下一个（currentIndex 不变，因为删了一个 CC 后后面的索引会顶上来）
+          await updateRefNavigator();
+        } else {
+          document.getElementById("ref-navigator").classList.add("hidden");
+          showToast("全部匹配完成", "success");
+        }
+      }
+    });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
