@@ -27,7 +27,7 @@ export async function markSelection() {
     const selection = context.document.getSelection();
     const paragraphs = selection.paragraphs;
     
-    paragraphs.load(["items", "style", "text"]);
+    paragraphs.load(["items/style", "items/text"]);
     await context.sync();
 
     const isTableCheckSupported = Office.context.requirements.isSetSupported("WordApi", "1.3");
@@ -42,45 +42,47 @@ export async function markSelection() {
     const validRanges = [];
 
     const isSingleParagraphSelected = paragraphs.items.length === 1;
+    let validParagraphData = [];
 
     for (let i = 0; i < paragraphs.items.length; i++) {
-      const p = paragraphs.items[i];
-      const range = paragraphRanges[i];
-      let text = "";
-      try { text = p.text.trim(); } catch(e) {}
-      if (!text) continue;
+        const p = paragraphs.items[i];
+        const range = paragraphRanges[i];
+        let text = "";
+        try { text = p.text.trim(); } catch(e) {}
+        if (!text) continue;
 
-      const styleName = (p.style || "").toString().toLowerCase();
-      // 更加精准的数字标题检测：必须是 1. 或 1.1 这种开头，且后面跟有空格或制表符
-      const isNumberedHeader = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text);
-      
-      console.log(`[DEBUG] Paragraph: "${text.substring(0, 20)}...", Style: ${styleName}, isNumberedHeader: ${isNumberedHeader}`);
-
-      if (skipRules.headings && !isSingleParagraphSelected) {
-        // 仅在非单一选区时跳过明确的标题样式
+        const styleName = (p.style || "").toString().toLowerCase();
+        // 改进：仅当文本较短且符合编号特征时，才认为可能是标题（防止误杀长列表项）
+        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
         const isHeadingStyle = styleName.includes("heading") || 
                              styleName.includes("标题") || 
                              (styleName.includes("title") && !styleName.includes("subtitle") && !styleName.includes("副标题"));
-        
-        if (isHeadingStyle || isNumberedHeader) {
-          console.log(`[DEBUG] Skipped as Heading`);
-          continue;
+
+        let shouldSkip = false;
+        if (skipRules.headings && !isSingleParagraphSelected) {
+            if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
         }
-      }
 
-      if (skipRules.tables && isTableCheckSupported) {
-        try { 
-          // 增加 isNullObject 的检查
-          if (range.parentTableCell && !range.parentTableCell.isNullObject) {
-            // 如果用户只选了这一个单元格，可能还是想处理的，但目前规则是跳过表格
-            console.log(`[DEBUG] Skipped as Table Cell`);
-            continue;
-          }
-        } catch(e) {}
-      }
+        if (skipRules.tables && isTableCheckSupported) {
+            try { 
+                if (range.parentTableCell && !range.parentTableCell.isNullObject) {
+                    shouldSkip = true;
+                }
+            } catch(e) {}
+        }
 
-      validParagraphs.push(p);
-      validRanges.push(range);
+        validParagraphData.push({ p, range, shouldSkip });
+    }
+
+    // --- 核心优化：兜底机制 ---
+    // 如果所有选中的非空段落都被规则过滤掉了，则忽略过滤规则（强制包含它们），确保用户有反馈
+    const allSkipped = validParagraphData.length > 0 && validParagraphData.every(d => d.shouldSkip);
+    
+    for (const data of validParagraphData) {
+        if (!data.shouldSkip || allSkipped) {
+            validParagraphs.push(data.p);
+            validRanges.push(data.range);
+        }
     }
 
     // 搜索引用用的通配符模式（Word 语法）
@@ -193,14 +195,21 @@ async function replaceSingleMarkedContent(newText, refMap) {
     if (ccs.items.length === 0) return;
 
     const cc = ccs.items[0];
-    const cleanText = newText.split(/\r?\n/).filter(l => l.trim()).join("\n");
+    
+    // 1. 预处理：处理 literal \n 和 Markdown 标记
+    // 为了保持格式保留引擎的稳定性，我们这里做一个简单的 Markdown 清理
+    // 如果 AI 返回了 ### 标题或 **加粗**，我们将其转换为纯文本或简单格式
+    let processedText = newText.replace(/\\n/g, "\n");
+    // 去掉开头的 ### 等标记
+    processedText = processedText.replace(/^#{1,6}\s?/gm, "");
+    
+    const cleanText = processedText.split(/\r?\n/).filter(l => l.trim()).join("\n");
     
     // 清空内容，准备注入
     cc.insertText("", Word.InsertLocation.replace);
     await context.sync();
 
     // 采用正则切分，保留占位符以便识别
-    // 匹配 {{REF_(\d+)}}
     const parts = cleanText.split(/({{REF_\d+}})/g);
 
     for (const part of parts) {
@@ -210,18 +219,23 @@ async function replaceSingleMarkedContent(newText, refMap) {
       if (match) {
         const refItem = refMap.find(m => m.placeholder === part);
         if (refItem) {
-          // 物理注入原始 OOXML，保留所有链接、域、格式
           cc.insertOoxml(refItem.ooxml, Word.InsertLocation.end);
         } else {
-          // 如果 AI 伪造了不存在的占位符，当作普通文本
           cc.insertText(part, Word.InsertLocation.end);
         }
       } else {
-        // 普通文本片段
-        cc.insertText(part, Word.InsertLocation.end);
+        // 进一步处理行内加粗 **text**
+        const subParts = part.split(/(\*\*.*?\*\*)/g);
+        for (const subPart of subParts) {
+          if (subPart.startsWith("**") && subPart.endsWith("**")) {
+            const boldText = subPart.substring(2, subPart.length - 2);
+            const run = cc.insertText(boldText, Word.InsertLocation.end);
+            run.font.bold = true;
+          } else {
+            cc.insertText(subPart, Word.InsertLocation.end);
+          }
+        }
       }
-      // 每一小块 insert 后可以 sync 一次确保顺序，或者积累一定量再 sync
-      // 为了稳定，我们每一块都 sync
       await context.sync();
     }
 
