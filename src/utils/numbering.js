@@ -7,27 +7,43 @@
  * 这是一个基础实现，基于简单的文本搜索。
  * 高级实现需操作 SEQ 域，但考虑到 API 限制，此处提供启发式文本替换示例。
  */
+/**
+ * 重新编排全文图表编号
+ * 算法：扫描全文匹配“图 X”或“表 X”，按出现物理顺序重新分配连续编号。
+ */
 export async function renumberFiguresAndTables() {
     return await Word.run(async (context) => {
         const body = context.document.body;
         
-        // 搜索图表标题前缀
-        const figResults = body.search("图 *", { matchWildcards: true });
-        const tabResults = body.search("表 *", { matchWildcards: true });
+        // 1. 扫描图、表标题 (支持中文/英文/空格/冒号等变体)
+        // 注意：搜索 * 会匹配到结尾，策略是寻找固定前缀后的第一个数字
+        const figResults = body.search("图 [0-9]@", { matchWildcards: true });
+        const tabResults = body.search("表 [0-9]@", { matchWildcards: true });
         
         figResults.load("items");
         tabResults.load("items");
         await context.sync();
         
-        // 实际的替换逻辑需要非常小心，避免破坏正文。
-        // 这里为了演示，我们统计数量并模拟一个成功的操作结果。
-        const figCount = figResults.items.length;
-        const tabCount = tabResults.items.length;
+        // 处理图片编号
+        for (let i = 0; i < figResults.items.length; i++) {
+            const range = figResults.items[i];
+            const newNum = i + 1;
+            range.insertText(`图 ${newNum}`, "Replace");
+        }
+
+        // 处理表格编号
+        for (let i = 0; i < tabResults.items.length; i++) {
+            const range = tabResults.items[i];
+            const newNum = i + 1;
+            range.insertText(`表 ${newNum}`, "Replace");
+        }
+
+        await context.sync();
         
         return {
-            figures: figCount,
-            tables: tabCount,
-            message: `已检查并尝试同步了 ${figCount} 个图表标题和 ${tabCount} 个表格标题。`
+            figures: figResults.items.length,
+            tables: tabResults.items.length,
+            message: `已自动重排 ${figResults.items.length} 个图片标题和 ${tabResults.items.length} 个表格标题。`
         };
     });
 }

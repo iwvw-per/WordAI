@@ -682,8 +682,14 @@ function bindAcademicEvents() {
   // --- 参考文献 ---
   document.getElementById("btn-match-refs")?.addEventListener("click", async () => {
     try {
-      showInlineStatus("processing", "正在扫描占位符...");
-      const results = await refUtils.scanPlaceholders();
+      showInlineStatus("processing", "正在扫描占位符与文献列表...");
+      
+      // 1. 同时扫描占位符和解析列表
+      const [results, bibliography] = await Promise.all([
+        refUtils.scanPlaceholders(),
+        refUtils.parseBibliography()
+      ]);
+
       if (results.items.length === 0) {
         showInlineStatus("done", "未发现占位符");
         setTimeout(() => hideInlineStatus(), 2000);
@@ -691,11 +697,12 @@ function bindAcademicEvents() {
       }
       
       refNavState.items = results.items;
+      refNavState.bibliography = bibliography; // 保存到状态
       refNavState.currentIndex = 0;
       
       document.getElementById("ref-navigator").classList.remove("hidden");
-      updateRefNavigator();
-      showInlineStatus("done", `发现 ${results.items.length} 处引用待处理 ✓`);
+      await updateRefNavigator();
+      showInlineStatus("done", `发现 ${results.items.length} 处引用，文献库 ${bibliography.length} 条 ✓`);
       setTimeout(() => hideInlineStatus(), 2000);
     } catch (err) {
       showInlineStatus("error", err.message);
@@ -720,11 +727,25 @@ function bindAcademicEvents() {
   document.getElementById("btn-ref-confirm")?.addEventListener("click", async () => {
     try {
       const currentItem = refNavState.items[refNavState.currentIndex];
-      // 真实场景下这里会弹窗选择或使用 LLM 匹配，这里做简单替换演示
+      const suggestions = refNavState.suggestions || [];
+      const bestMatch = suggestions[0];
+
+      if (!bestMatch) {
+         showToast("未找到匹配的参考文献，请手动处理", "warning");
+         return;
+      }
+
       await Word.run(async (context) => {
-        // 由于 item 跨上下文可能失效，需要重新获取或使用 range 对象。这里仅做演示：
-        showToast("已确认替换此引用", "success");
+        // 将占位符替换为编号格式 [N]
+        const replacement = `[${bestMatch.id}]`;
+        currentItem.insertText(replacement, "Replace");
+        // 应用简单样式标记已处理
+        currentItem.font.color = "#2563eb";
+        await context.sync();
       });
+
+      showToast(`已匹配到: ${bestMatch.text.substring(0, 20)}...`, "success");
+
       // 自动下一个
       if (refNavState.currentIndex < refNavState.items.length - 1) {
         refNavState.currentIndex++;
@@ -741,24 +762,56 @@ function bindAcademicEvents() {
   // --- 写作辅助 ---
   document.getElementById("btn-term-check")?.addEventListener("click", async () => {
     try {
-      showInlineStatus("processing", "正在扫描全文提取术语...");
+      const resultsDiv = document.getElementById("term-check-results");
+      resultsDiv.classList.remove("hidden");
+      resultsDiv.innerHTML = '<div class="compact-list-item">扫描并识别术语中...</div>';
+
       await Word.run(async (context) => {
         const body = context.document.body;
         body.load("text");
         await context.sync();
-        const text = body.text.substring(0, 10000); // 截取部分防超限
+        const text = body.text.substring(0, 15000); // 截取核心内容
         const conflicts = await termUtils.extractTerminology(text);
-        if (conflicts && conflicts.length > 0) {
-          showToast(`发现 ${conflicts.length} 处术语不一致！`, "warning");
-          console.log(conflicts);
-        } else {
-          showToast("未发现明显的术语不一致。", "success");
+        
+        if (!conflicts || conflicts.length === 0) {
+          resultsDiv.innerHTML = '<div class="compact-list-item">未发现明显术_语冲突 ✨</div>';
+          setTimeout(() => resultsDiv.classList.add("hidden"), 3000);
+          return;
         }
+
+        resultsDiv.innerHTML = conflicts.map((c, i) => `
+          <div class="compact-list-item term-conflict-item">
+            <div style="flex:1">
+              <span class="badge" style="background:var(--primary-light)">${c.standard}</span>
+              <span style="font-size:10px; color:var(--text-secondary)"> ← ${c.aliases.join(", ")}</span>
+            </div>
+            <button class="btn btn-xs btn-ghost unify-term-btn" data-standard="${c.standard}" data-aliases='${JSON.stringify(c.aliases)}'>统一</button>
+          </div>
+        `).join("");
+
+        // 绑定统一事件
+        resultsDiv.querySelectorAll(".unify-term-btn").forEach(btn => {
+           btn.addEventListener("click", async () => {
+              const standard = btn.dataset.standard;
+              const aliases = JSON.parse(btn.dataset.aliases);
+              btn.disabled = true;
+              btn.textContent = "⏳";
+              try {
+                await termUtils.replaceTerminology(aliases, standard);
+                showToast(`全文 ${standard} 已统一 ✓`, "success");
+                btn.closest(".term-conflict-item").style.opacity = "0.5";
+                btn.textContent = "已统一";
+              } catch (err) {
+                showToast(err.message, "error");
+                btn.disabled = false;
+                btn.textContent = "统一";
+              }
+           });
+        });
       });
-      hideInlineStatus();
     } catch (err) {
-      showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 3000);
+      showToast(err.message, "error");
+      document.getElementById("term-check-results").classList.add("hidden");
     }
   });
 
@@ -799,19 +852,30 @@ function bindAcademicEvents() {
   });
 }
 
-function updateRefNavigator() {
+async function updateRefNavigator() {
   if (refNavState.items.length === 0) return;
   const status = document.getElementById("ref-nav-status");
   const target = document.getElementById("ref-nav-target");
-  status.textContent = `正在匹配第 ${refNavState.currentIndex + 1}/${refNavState.items.length} 处引用`;
   
-  Word.run(async (context) => {
-    // 尝试选中该项并获取文本展示
-    const item = refNavState.items[refNavState.currentIndex];
-    // context.trackedObjects.add(item);
-    // 这里为了演示健壮性，通常需要 re-track，暂时展示静态逻辑
-    target.value = "待匹配占位符区域";
-    item.select();
+  const currentItem = refNavState.items[refNavState.currentIndex];
+  currentItem.load("text");
+  
+  await Word.run(async (context) => {
+    currentItem.select();
     await context.sync();
-  }).catch(err => console.error(err));
+
+    const text = currentItem.text;
+    const suggestions = refUtils.matchPlaceholderToBibliography(text, refNavState.bibliography || []);
+    refNavState.suggestions = suggestions;
+
+    status.textContent = `第 ${refNavState.currentIndex + 1}/${refNavState.items.length} 处: ${text}`;
+    
+    if (suggestions.length > 0) {
+      target.value = `建议匹配: [${suggestions[0].id}] ${suggestions[0].text.substring(0, 50)}...`;
+      target.style.color = "var(--primary)";
+    } else {
+      target.value = "未找到匹配项";
+      target.style.color = "var(--error)";
+    }
+  });
 }
