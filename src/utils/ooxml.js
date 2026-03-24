@@ -32,13 +32,16 @@ export async function markSelection() {
     await context.sync();
 
     if (paragraphs.items.length === 0) {
-      // 备选方案：如果是单点选区，尝试获取当前所在的段落
-      const parentParagraph = selection.getRange("Start").paragraphs.getFirst();
-      parentParagraph.load(["text", "style"]);
+      // 备选方案：通过获取选区起点附近的段落集合并查数，避免直接 .getFirst() 导致 ItemNotFound
+      const fallbackPars = selection.getRange("Start").paragraphs;
+      fallbackPars.load("items");
       await context.sync();
-      if (parentParagraph) {
-         // 手动构造一个类似 items 的结构
-         paragraphs.items = [parentParagraph];
+      
+      if (fallbackPars.items.length > 0) {
+         const p = fallbackPars.items[0];
+         p.load(["text", "style"]);
+         await context.sync();
+         paragraphs.items = [p];
       }
     } else {
       // 显式加载每个 items 的属性
