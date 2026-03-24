@@ -198,7 +198,7 @@ body {
 .action-btn .action-icon { font-size: 16px; margin-bottom: 2px; flex-shrink: 0; }
 .action-btn .action-name { overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; display: block; }
 .action-btn.active-loading { pointer-events: none; opacity: 0.7; }
-.action-btn.active-loading .action-icon { animation: spin 1s linear infinite; }
+.action-btn.active-loading .action-icon { }
 .action-btn:disabled { opacity: 0.5; pointer-events: none; }
 
 /* ==================== Forms & Textarea ==================== */
@@ -265,7 +265,7 @@ select.form-input { cursor: pointer; padding-right: 24px; }
 .inline-status.error { border-color: rgba(220, 38, 38, 0.3); color: var(--error); }
 .inline-spinner {
   width: 10px; height: 10px; border: 1.5px solid rgba(0, 0, 0, 0.1);
-  border-top-color: currentColor; border-radius: 50%; animation: spin 0.6s linear infinite;
+  border-top-color: currentColor; border-radius: 50%;
 }
 
 /* ==================== Skip Rules (Toggles) ==================== */

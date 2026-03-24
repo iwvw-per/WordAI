@@ -13,35 +13,24 @@ const CC_TAG = "wordai_target";
 export async function markSelection() {
   let results = [];
   await Word.run(async (context) => {
-    // STEP-1: 清理之前的标记
-    console.log("[WordAI] STEP-1: 清理旧标记");
     try {
       const existing = context.document.contentControls.getByTag(CC_TAG);
       existing.load("items");
       await context.sync();
       for (const cc of existing.items) cc.delete(true);
       await context.sync();
-    } catch (e) {
-      console.error("[WordAI] STEP-1 失败:", e.message);
-    }
+    } catch (e) {}
 
-    // STEP-2: 获取选区与段落
-    console.log("[WordAI] STEP-2: 获取选区段落");
     const skipRules = storage.getSkipRules();
     const selection = context.document.getSelection();
-    selection.load("text");
-    await context.sync();
-    console.log("[WordAI] STEP-2: 选区文本长度 =", selection.text?.length);
-
-    const paragraphs = selection.paragraphs;
+    const selRange = selection.getRange();
+    const paragraphs = selRange.paragraphs;
+    
     paragraphs.load("items");
     await context.sync();
-    console.log("[WordAI] STEP-2: 段落数 =", paragraphs.items.length);
 
-    // STEP-3: 构建工作段落列表
     let workParagraphs = paragraphs.items;
     if (workParagraphs.length === 0) {
-      console.log("[WordAI] STEP-3: 段落为空，尝试 fallback");
       try {
         const startRange = selection.getRange("Start");
         const pColl = startRange.paragraphs;
@@ -50,25 +39,16 @@ export async function markSelection() {
         if (pColl.items.length > 0) {
           workParagraphs = [pColl.items[0]];
         }
-      } catch (e) {
-        console.error("[WordAI] STEP-3 fallback 失败:", e.message);
-      }
+      } catch (e) {}
     }
 
-    if (workParagraphs.length === 0) {
-      console.warn("[WordAI] 没有可工作的段落，退出");
-      return;
-    }
+    if (workParagraphs.length === 0) return;
 
-    // STEP-4: 加载段落属性
-    console.log("[WordAI] STEP-4: 加载段落属性，段落数 =", workParagraphs.length);
     for (let p of workParagraphs) {
       p.load(["text", "style"]);
     }
     await context.sync();
 
-    // STEP-5: 过滤
-    console.log("[WordAI] STEP-5: 过滤段落");
     const isSingle = workParagraphs.length === 1;
     const resultParagraphs = [];
 
@@ -86,16 +66,10 @@ export async function markSelection() {
       if (skipRules.headings && !isSingle) {
         if (isHeadingStyle || isHeaderPattern) shouldSkip = true;
       }
-
-      // 兜底：如果全部被跳过，不跳过任何
-      if (!shouldSkip) {
-        resultParagraphs.push(p);
-      }
+      if (!shouldSkip) resultParagraphs.push(p);
     }
 
-    // 兜底机制
     if (resultParagraphs.length === 0 && workParagraphs.length > 0) {
-      console.log("[WordAI] STEP-5: 全部被过滤，启用兜底");
       for (let p of workParagraphs) {
         let text = "";
         try { text = p.text.trim(); } catch(e) {}
@@ -103,9 +77,6 @@ export async function markSelection() {
       }
     }
 
-    console.log("[WordAI] STEP-5: 有效段落数 =", resultParagraphs.length);
-
-    // STEP-6: 搜索引用并标记
     const refSearches = [
       "\\[[0-9.,\\- ]@\\]",
       "图 [0-9]@",
@@ -117,25 +88,14 @@ export async function markSelection() {
 
     for (let i = 0; i < resultParagraphs.length; i++) {
       const p = resultParagraphs[i];
-
       try {
-        // STEP-6a: 获取 targetRange
-        let targetRange;
-        if (isSingle) {
-          targetRange = selection.getRange();
-        } else {
-          targetRange = p.getRange();
-        }
-
-        console.log(`[WordAI] STEP-6: 段落 ${i+1}/${resultParagraphs.length}`);
+        let targetRange = isSingle ? selection.getRange() : p.getRange();
         targetRange.load("text");
         await context.sync();
 
         const text = targetRange.text.trim();
         if (!text) continue;
-        console.log(`[WordAI] STEP-6: 段落文本 = "${text.substring(0, 30)}..."`);
 
-        // STEP-6b: 提取引用
         const refMap = [];
         for (const pattern of refSearches) {
           try {
@@ -147,20 +107,12 @@ export async function markSelection() {
                 matchRange.load(["text"]);
                 const ooxml = matchRange.getOoxml();
                 await context.sync();
-                refMap.push({
-                  text: matchRange.text,
-                  ooxml: ooxml.value
-                });
-              } catch(e) {
-                console.warn(`[WordAI] STEP-6b: 单个引用提取失败:`, e.message);
-              }
+                refMap.push({ text: matchRange.text, ooxml: ooxml.value });
+              } catch(e) {}
             }
-          } catch (e) {
-            // search pattern 不匹配很正常，静默跳过
-          }
+          } catch (e) {}
         }
 
-        // STEP-6c: token 化
         let tokenizedText = text;
         const finalRefMap = [];
         const uniqueRefs = [];
@@ -173,21 +125,13 @@ export async function markSelection() {
           finalRefMap.push({ placeholder, ooxml: item.ooxml, original: item.text });
         });
 
-        // STEP-6d: 插入 ContentControl
-        console.log(`[WordAI] STEP-6d: 插入 CC for 段落 ${i+1}`);
         const cc = targetRange.insertContentControl();
         cc.tag = CC_TAG;
         cc.appearance = Word.ContentControlAppearance.hidden;
         await context.sync();
 
-        results.push({
-          text: tokenizedText,
-          refMap: finalRefMap
-        });
-        console.log(`[WordAI] STEP-6: 段落 ${i+1} 完成 ✓`);
-      } catch (err) {
-        console.error(`[WordAI] STEP-6: 段落 ${i+1} 失败:`, err.message, err.debugInfo || "");
-      }
+        results.push({ text: tokenizedText, refMap: finalRefMap });
+      } catch (err) {}
     }
   });
   return results;
