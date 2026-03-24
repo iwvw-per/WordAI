@@ -10,7 +10,7 @@
   <Version>1.0.0.0</Version>
   <ProviderName>WordAI</ProviderName>
   <DefaultLocale>zh-CN</DefaultLocale>
-  <DisplayName DefaultValue="WordAI - 智能文字处理" />
+  <DisplayName DefaultValue="WordAI" />
   <Description DefaultValue="使用 LLM 快速处理 Word 中的文字：润色、降AI、改写等" />
   <IconUrl DefaultValue="https://localhost:3000/assets/icon-64.png" />
   <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-128.png" />
