@@ -11,7 +11,7 @@ export async function markSelection() {
     try {
       const skipRules = storage.getSkipRules();
       const selection = context.document.getSelection();
-      selection.load(["text", "isEmpty"]);
+      selection.load(["text", "isEmpty", "style"]);
       await context.sync();
 
       // 清理旧标记
@@ -22,10 +22,11 @@ export async function markSelection() {
       await context.sync();
 
       let targetRanges = [];
-      const text = selection.text.trim();
+      // 更加严谨的选区判定：非空且长度大于0
+      const isRealSelection = !selection.isEmpty && selection.text && selection.text.length > 0;
 
-      if (!text) {
-        // 选区为空，处理当前光标所在段落
+      if (!isRealSelection) {
+        // 选区为空，处理当前所在段落
         const paragraphs = selection.paragraphs;
         paragraphs.load(["items", "text", "style"]);
         await context.sync();
@@ -33,21 +34,21 @@ export async function markSelection() {
           targetRanges = [paragraphs.items[0]];
         }
       } else {
-        // 选区不为空，直接处理选区
+        // 使用精确选区
         targetRanges = [selection];
       }
 
       for (const range of targetRanges) {
-        range.load(["text", "style"]);
+        range.load(["text", "style", "font"]);
         await context.sync();
-        const rangeText = range.text.trim();
-        if (!rangeText) continue;
+        const rangeText = range.text || "";
+        if (!rangeText.trim()) continue;
 
-        // 过滤标题（仅在处理全段落时且不是唯一段落时应用）
+        // 过滤标题
         const styleName = (range.style || "").toString().toLowerCase();
-        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(rangeText) && rangeText.length < 120;
+        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(rangeText.trim()) && rangeText.length < 120;
         const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
-        if (skipRules.headings && !text && (isHeadingStyle || isHeaderPattern)) {
+        if (skipRules.headings && !isRealSelection && (isHeadingStyle || isHeaderPattern)) {
           continue;
         }
 
@@ -99,15 +100,24 @@ export async function markSelection() {
         cc.tag = CC_TAG;
         cc.appearance = Word.ContentControlAppearance.hidden;
         
-        // 捕获原始字体信息以备回写恢复
+        // 全量捕获字体属性，包括上标/下标等关键排版信息
         const font = range.font;
-        font.load(["name", "size", "color"]);
+        font.load(["name", "size", "color", "bold", "italic", "underline", "superscript", "subscript"]);
         await context.sync();
 
         results.push({ 
           text: tokenizedText, 
           refMap: finalRefMap, 
-          baseFont: { name: font.name, size: font.size, color: font.color }
+          baseFont: { 
+            name: font.name, 
+            size: font.size, 
+            color: font.color,
+            bold: font.bold,
+            italic: font.italic,
+            underline: font.underline,
+            superscript: font.superscript,
+            subscript: font.subscript
+          }
         });
       }
       await context.sync();
@@ -118,7 +128,7 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 逐段回写（支持格式恢复） ====================
+// ==================== 逐段回写（全量格式恢复） ====================
 
 async function replaceSingleMarkedContent(newText, refMap, baseFont) {
   await Word.run(async (context) => {
@@ -129,7 +139,7 @@ async function replaceSingleMarkedContent(newText, refMap, baseFont) {
     if (ccs.items.length === 0) return;
     const cc = ccs.items[0];
     
-    // 强制先清空内容
+    // 清空并预设基础格式
     cc.insertText("", Word.InsertLocation.replace);
     await context.sync();
 
@@ -141,15 +151,19 @@ async function replaceSingleMarkedContent(newText, refMap, baseFont) {
         continue;
       }
       if (line) {
-        // processMarkdownLine 内部会处理加粗和引用
         await format.processMarkdownLine(cc, line, refMap);
         
-        // 恢复基本字体属性（防止因清空导致的手动格式丢失）
+        // 恢复全量字体属性，解决“字体变大/变小”或“上标失效”的问题
+        const range = cc.getRange();
         if (baseFont) {
-          const range = cc.getRange();
           range.font.name = baseFont.name;
           if (baseFont.size) range.font.size = baseFont.size;
           if (baseFont.color) range.font.color = baseFont.color;
+          range.font.bold = baseFont.bold;
+          range.font.italic = baseFont.italic;
+          range.font.underline = baseFont.underline;
+          // 注意：不要全局覆盖 superscript/subscript，否则会破坏正文中的引用
+          // 仅在非引用部分应用，或由 processMarkdownLine 处理特殊格式
         }
       }
     }
@@ -174,6 +188,9 @@ export async function executeAndReplace(processText, onStatus, signal) {
 
   const results = await markSelection();
   if (!results || results.length === 0) throw new Error("请先选择要处理的文字内容");
+
+  const totalChars = results.reduce((sum, item) => sum + (item.text?.length || 0), 0);
+  if (onStatus) onStatus("processing", `正在处理 (${totalChars} 字)...`);
 
   for (let i = 0; i < results.length; i++) {
     if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
