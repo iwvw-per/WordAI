@@ -10,6 +10,7 @@ export async function markSelection() {
     try {
       const skipRules = storage.getSkipRules();
       const selection = context.document.getSelection();
+      // 获取选区并加载必要属性
       selection.load(["text", "isEmpty", "style"]);
       await context.sync();
 
@@ -17,7 +18,7 @@ export async function markSelection() {
       const existing = context.document.contentControls.getByTag(CC_TAG);
       existing.load("items");
       await context.sync();
-      for (const cc of existing.items) cc.delete(true);
+      for (const cc of existing.items) cc.delete(true); 
       await context.sync();
 
       let targetRanges = [];
@@ -35,7 +36,7 @@ export async function markSelection() {
       }
 
       for (const range of targetRanges) {
-        range.load(["text", "style"]);
+        range.load(["text", "style", "font"]);
         await context.sync();
         const rangeText = range.text || "";
         if (!rangeText.trim()) continue;
@@ -115,9 +116,9 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 回写（智能策略：单段直替 vs 多段逐行） ====================
+// ==================== 回写（智能策略） ====================
 
-async function replaceSingleMarkedContent(newText, refMap, baseFont) {
+async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
   await Word.run(async (context) => {
     const ccs = context.document.contentControls.getByTag(CC_TAG);
     ccs.load("items");
@@ -127,24 +128,21 @@ async function replaceSingleMarkedContent(newText, refMap, baseFont) {
     const cc = ccs.items[0];
     
     // 将占位符替换回原始引用文本（纯文本模式）
-    let plainText = newText;
+    let plainText = aiResult;
     for (const ref of refMap) {
       plainText = plainText.split(ref.placeholder).join(ref.original);
     }
 
-    // 判断是否为单段纯文本（最常见的学术润色场景）
     const lines = plainText.split(/\r?\n/).filter(l => l.trim());
     const isSingleParagraph = lines.length <= 1;
 
     if (isSingleParagraph) {
-      // ★ 单段：直接 insertText 替换，保留原段落结构
-      const finalText = (lines[0] || plainText).trim();
-      cc.insertText(finalText, Word.InsertLocation.replace);
+      // ★ 单段直接替换
+      cc.insertText((lines[0] || plainText).trim(), Word.InsertLocation.replace);
     } else {
-      // ★ 多段：清空后逐行插入
+      // ★ 多段逐行插入
       cc.insertText("", Word.InsertLocation.replace);
       await context.sync();
-
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
@@ -156,15 +154,19 @@ async function replaceSingleMarkedContent(newText, refMap, baseFont) {
       }
     }
     
-    // 恢复字体
+    // 恢复字体（增加安全检查，防止 InvalidArguments 错误）
     if (baseFont) {
       const range = cc.getRange();
       if (baseFont.name) range.font.name = baseFont.name;
-      if (baseFont.size) range.font.size = baseFont.size;
+      // Word API 不接受 null 或非正数体积作为 size
+      if (typeof baseFont.size === "number" && baseFont.size > 0) {
+        range.font.size = baseFont.size;
+      }
       if (baseFont.color) range.font.color = baseFont.color;
     }
 
-    cc.delete(false); // false = 仅删除容器，保留内容
+    // ★ 关键修正：delete(true) 表示保留内容只删容器；delete(false) 会连带内容一起删除
+    cc.delete(true); 
     await context.sync();
   });
 }
