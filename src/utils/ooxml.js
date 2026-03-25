@@ -1,10 +1,11 @@
 import * as storage from "./storage.js";
 
-const CC_TAG = "wordai_target";
 const SHIELD_PREFIX = "wordai_shield_";
+const BOU_START = "wordai_boundary_start";
+const BOU_END = "wordai_boundary_end";
 
 /**
- * 标记选区并安装“物理盾牌”
+ * 标记选区：安装无级联风险的并列锚点链
  */
 export async function markSelection() {
   let results = [];
@@ -15,12 +16,14 @@ export async function markSelection() {
       selection.load(["text", "isEmpty", "style"]);
       await context.sync();
 
-      // 清理旧标记
+      // 1. 清理所有旧标记
       const allCCs = context.document.contentControls;
       allCCs.load("items");
       await context.sync();
       for (const cc of allCCs.items) {
-          if (cc.tag === CC_TAG || (cc.tag && cc.tag.startsWith(SHIELD_PREFIX))) cc.delete(true);
+          if (cc.tag === BOU_START || cc.tag === BOU_END || (cc.tag && cc.tag.startsWith(SHIELD_PREFIX))) {
+              cc.delete(true);
+          }
       }
       await context.sync();
 
@@ -42,21 +45,23 @@ export async function markSelection() {
         const rangeText = range.text || "";
         if (!rangeText.trim()) continue;
 
-        // 查找引用并记录 (使用通配符覆盖多种格式)
-        const refPatterns = ["\\[[0-9.,\\- ]@\\]", "图 [0-9]@", "表 [0-9]@", "Fig. [0-9]@", "Figure [0-9]@", "Table [0-9]@"];
-        const foundInstances = [];
-        
-        // 我们需要按在文档中的【物理出现的先后顺序】来安装盾牌
+        // 【最稳模式】：在选区最开头和最末尾分别钉上“定海神针”
+        const startMarker = range.getRange("Start").insertContentControl();
+        startMarker.tag = BOU_START;
+        startMarker.appearance = Word.ContentControlAppearance.hidden;
+
+        const endMarker = range.getRange("End").insertContentControl();
+        endMarker.tag = BOU_END;
+        endMarker.appearance = Word.ContentControlAppearance.hidden;
+
+        // 搜索并录入引用物理盾牌
         const allMatches = range.search("\\[[0-9.,\\- ]@\\]|图 [0-9]@|表 [0-9]@|Fig. [0-9]@|Figure [0-9]@|Table [0-9]@", { matchWildcards: true });
         allMatches.load("items");
         await context.sync();
 
-        for (let m of allMatches.items) {
-           m.load("text");
-        }
+        for (let m of allMatches.items) m.load("text");
         await context.sync();
 
-        const finalRefMap = [];
         const uniqueKeys = [];
         let tokenizedText = rangeText;
 
@@ -64,30 +69,27 @@ export async function markSelection() {
            const m = allMatches.items[i];
            const shield = m.insertContentControl();
            shield.tag = `${SHIELD_PREFIX}${i}`;
-           shield.title = m.text; // 将原始文本存入 title，方便回写时切分
+           shield.title = m.text; // 用于分段
            shield.appearance = Word.ContentControlAppearance.hidden;
            
            if (!uniqueKeys.includes(m.text)) uniqueKeys.push(m.text);
         }
 
-        // 构建发给 AI 的占位符文本
+        // 占位符转换（长匹配优先）
         uniqueKeys.sort((a,b) => b.length - a.length).forEach((txt, idx) => {
            const placeholder = `{{REF_${idx}}}`;
            tokenizedText = tokenizedText.split(txt).join(placeholder);
-           finalRefMap.push({ placeholder, original: txt });
+           results.push({ placeholder, original: txt }); // 暂存用于回写匹配
         });
 
-        const cc = range.insertContentControl();
-        cc.tag = CC_TAG;
-        cc.appearance = Word.ContentControlAppearance.hidden;
-        
         const font = range.font;
         font.load(["name", "size", "color", "bold", "italic", "underline"]);
         await context.sync();
 
+        // 将本段结果收集
         results.push({ 
           text: tokenizedText, 
-          refMap: finalRefMap, 
+          refMap: results.filter(r => r.placeholder), // 仅仅是 mapping
           baseFont: { 
             name: font.name, size: font.size, color: font.color,
             bold: font.bold, italic: font.italic, underline: font.underline
@@ -99,37 +101,37 @@ export async function markSelection() {
       console.error("markSelection error:", err);
     }
   });
-  return results;
+  // 过滤出干净的结果对象
+  return results.filter(r => r.text);
 }
 
 /**
- * 物理间隙原位填缝 (Surgical Gap-Filling)
+ * 无容器填缝方案：绝对物理隔离更新
  */
 async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
   try {
     await Word.run(async (context) => {
-      const ccs = context.document.contentControls.getByTag(CC_TAG);
-      ccs.load("items");
+      // 1. 获取链上的所有锚点内容
+      const allCCs = context.document.contentControls;
+      allCCs.load("items");
       await context.sync();
-      if (ccs.items.length === 0) return;
-      const cc = ccs.items[0];
 
-      const shields = cc.contentControls;
-      shields.load("items");
-      await context.sync();
-      const shieldItems = shields.items.filter(s => s.tag && s.tag.startsWith(SHIELD_PREFIX));
+      const startAnchor = allCCs.items.find(c => c.tag === BOU_START);
+      const endAnchor = allCCs.items.find(c => c.tag === BOU_END);
+      const shieldItems = allCCs.items.filter(s => s.tag && s.tag.startsWith(SHIELD_PREFIX));
       
-      // 1. 还原 AI 结果到带原文引用的状态
+      if (!startAnchor || !endAnchor) return;
+
+      // 2. 将 AI 结果解析为待填入的片段
       let reconstructedText = aiResult.trim();
       for (const refDef of refMap) {
           reconstructedText = reconstructedText.split(refDef.placeholder).join(refDef.original);
       }
       
-      // 2. 将重建文本按物理采集时的 Shield 文本内容切分
       const textGaps = [];
       let tempText = reconstructedText;
       for (const s of shieldItems) {
-          const pattern = s.title; // 获取我们之前存入的原始内容
+          const pattern = s.title; 
           const idx = tempText.indexOf(pattern);
           if (idx >= 0) {
               textGaps.push(tempText.substring(0, idx));
@@ -140,61 +142,62 @@ async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
       }
       textGaps.push(tempText);
 
-      // 3. 【精准间隙更新】
-      // 如果没有引用，直接替换
+      // 3. 【无容器填缝手术】：按反向顺序更新间隙
+      // 如果没有引用盾牌：起始锚点 -> 结束锚点 之间的全部内容
       if (shieldItems.length === 0) {
-          cc.insertText(aiResult.trim(), Word.InsertLocation.replace);
+          const totalGap = startAnchor.getRange("After").expandTo(endAnchor.getRange("Before"));
+          totalGap.insertText(aiResult.trim(), Word.InsertLocation.replace);
       } else {
-          // 最后一个间隙
-          const lastGapRange = shieldItems[shieldItems.length-1].getRange("After").expandTo(cc.getRange("End"));
-          lastGapRange.insertText(textGaps[textGaps.length - 1] || "", Word.InsertLocation.replace);
+          // 最后一个间隙：最后一个盾牌 -> 结束锚点
+          const lastGap = shieldItems[shieldItems.length - 1].getRange("After").expandTo(endAnchor.getRange("Before"));
+          lastGap.insertText(textGaps[textGaps.length - 1] || "", Word.InsertLocation.replace);
 
-          // 中间及头部间隙 (逆序)
+          // 中间及头部
           for (let i = shieldItems.length - 1; i >= 0; i--) {
               const cur = shieldItems[i];
               const prev = shieldItems[i-1];
               if (prev) {
-                  const gap = prev.getRange("After").expandTo(cur.getRange("Before"));
-                  gap.insertText(textGaps[i] || "", Word.InsertLocation.replace);
+                  const midGap = prev.getRange("After").expandTo(cur.getRange("Before"));
+                  midGap.insertText(textGaps[i] || "", Word.InsertLocation.replace);
               } else {
-                  const firstGap = cc.getRange("Start").expandTo(cur.getRange("Before"));
+                  const firstGap = startAnchor.getRange("After").expandTo(cur.getRange("Before"));
                   firstGap.insertText(textGaps[0] || "", Word.InsertLocation.replace);
               }
           }
       }
 
-      // 处理字体
+      // 最后清理锚点并恢复字体
       if (baseFont) {
-          const r = cc.getRange();
-          if (baseFont.name) r.font.name = baseFont.name;
-          if (typeof baseFont.size === "number" && baseFont.size > 0) r.font.size = baseFont.size;
+          const finalRange = startAnchor.getRange("After").expandTo(endAnchor.getRange("Before"));
+          if (baseFont.name) finalRange.font.name = baseFont.name;
+          if (typeof baseFont.size === "number" && baseFont.size > 0) finalRange.font.size = baseFont.size;
       }
 
-      // 清理盾牌并保留内部 Fields
       for (const s of shieldItems) s.delete(true);
-      cc.delete(true);
+      startAnchor.delete(true);
+      endAnchor.delete(true);
       await context.sync();
     });
   } catch (err) {
-    console.error("Replace error:", err);
+    console.error("Replacement error:", err);
   }
 }
 
 export async function executeAndReplace(processText, onStatus, signal) {
-  if (onStatus) onStatus("processing", "正在分析选区...", true);
+  if (onStatus) onStatus("processing", "正在锁定物理锚点...", true);
   const results = await markSelection();
   if (!results || results.length === 0) throw new Error("请先选择文字内容");
 
   for (let i = 0; i < results.length; i++) {
     if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
     const item = results[i];
-    if (onStatus) onStatus("processing", `AI 正在处理 (${i + 1}/${results.length})...`, true);
+    if (onStatus) onStatus("processing", `AI 润色中 (${i + 1}/${results.length})...`, true);
     
     try {
       const aiResult = await processText(item.text);
       if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
       if (aiResult && aiResult.trim()) {
-        if (onStatus) onStatus("processing", `正在原位更新文本间隙 (${i + 1}/${results.length})...`, true);
+        if (onStatus) onStatus("processing", `正在物理同步内容 (${i + 1}/${results.length})...`, true);
         await replaceSingleMarkedContent(aiResult, item.refMap, item.baseFont);
       }
     } catch (err) {
@@ -212,7 +215,7 @@ export async function clearMarks() {
       allCCs.load("items");
       await context.sync();
       for (const cc of allCCs.items) {
-          if (cc.tag === CC_TAG || (cc.tag && cc.tag.startsWith(SHIELD_PREFIX))) {
+          if (cc.tag === BOU_START || cc.tag === BOU_END || (cc.tag && cc.tag.startsWith(SHIELD_PREFIX))) {
               cc.delete(true);
           }
       }
