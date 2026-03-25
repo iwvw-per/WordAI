@@ -23,23 +23,37 @@ export async function scanPlaceholders() {
 export async function parseBibliography() {
     return await Word.run(async (context) => {
         const body = context.document.body;
-        // 查找常见的参考文献标题
+        
+        // 1. 查找参考文献标题或通过样式启发式搜索
         const searchResults = body.search("参考文献|References", { matchWildcards: true, matchCase: false });
+        // 2. 同时加载具有“Bibliography”或“参考文献”样式的段落作为备选
+        const styledParagraphs = body.paragraphs;
+        
         searchResults.load("items");
+        styledParagraphs.load(["items", "style", "text"]);
         await context.sync();
 
-        if (searchResults.items.length === 0) return [];
+        let bibRange = null;
 
-        // 获取标题后的所有范围直到文档结束
-        const lastTitle = searchResults.items[searchResults.items.length - 1];
-        const bibRange = lastTitle.expandTo(body.getRange("End"));
+        if (searchResults.items.length > 0) {
+            const lastTitle = searchResults.items[searchResults.items.length - 1];
+            bibRange = lastTitle.expandTo(body.getRange("End"));
+        } else {
+            // 启发式：寻找包含“1.”起始或特定样式的连续段落
+            const bibStartPar = styledParagraphs.items.find(p => 
+                (p.style && (p.style.toLowerCase().includes("bib") || p.style.includes("参考文献"))) ||
+                /^\[1\]|1\./.test(p.text.trim())
+            );
+            if (bibStartPar) bibRange = bibStartPar.expandTo(body.getRange("End"));
+        }
+
+        if (!bibRange) return [];
+
         bibRange.load("text");
         await context.sync();
 
-        // 解析条目：按换行拆分，过滤掉过短的行
-        const lines = bibRange.text.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 10);
+        const lines = bibRange.text.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 8);
         return lines.map((line, index) => {
-            // 简单提取年份用于匹配：识别 19xx 或 20xx
             const yearMatch = line.match(/(19|20)\d{2}/);
             return {
                 id: index + 1,

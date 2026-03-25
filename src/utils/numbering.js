@@ -9,44 +9,50 @@
  */
 /**
  * 重新编排全文图表编号
- * 算法：扫描全文匹配“图 X”或“表 X”，按出现物理顺序重新分配连续编号。
+ * 算法：扫描全文匹配“图 X”或“表 X”，优先处理作为独立行的标题。
  */
 export async function renumberFiguresAndTables() {
     return await Word.run(async (context) => {
         const body = context.document.body;
-        
-        // 1. 扫描图、表标题 (支持 "图 1" 和 "图1" 等变体)
-        // 使用通配符：图字 + 可选空格 + 一个或多个数字
-        const figResults = body.search("图[ ]@[0-9]@", { matchWildcards: true });
-        const tabResults = body.search("表[ ]@[0-9]@", { matchWildcards: true });
-        // 如果通配符匹配不全，再尝试直接搜索（Word Wildcards 限制较多）
-        const figResultsBasic = body.search("图[0-9]@", { matchWildcards: true });
-        const tabResultsBasic = body.search("表[0-9]@", { matchWildcards: true });
-        
-        figResults.load("items");
-        tabResults.load("items");
+        const paragraphs = body.paragraphs;
+        paragraphs.load(["items", "text"]);
         await context.sync();
         
-        // 处理图片编号
-        for (let i = 0; i < figResults.items.length; i++) {
-            const range = figResults.items[i];
-            const newNum = i + 1;
-            range.insertText(`图 ${newNum}`, "Replace");
-        }
+        let figCount = 0;
+        let tabCount = 0;
 
-        // 处理表格编号
-        for (let i = 0; i < tabResults.items.length; i++) {
-            const range = tabResults.items[i];
-            const newNum = i + 1;
-            range.insertText(`表 ${newNum}`, "Replace");
+        for (const p of paragraphs.items) {
+            const text = p.text.trim();
+            // 启发式逻辑：标题通常较短且以“图”或“表”开头
+            if (text.length > 0 && text.length < 150) {
+                // 处理图片标题
+                if (/^图\s*[0-9]+/.test(text)) {
+                    figCount++;
+                    const search = p.search("图\s*[0-9]+", { matchWildcards: true });
+                    search.load("items");
+                    await context.sync();
+                    if (search.items.length > 0) {
+                        search.items[0].insertText(`图 ${figCount}`, "Replace");
+                    }
+                }
+                // 处理表格标题
+                else if (/^表\s*[0-9]+/.test(text)) {
+                    tabCount++;
+                    const search = p.search("表\s*[0-9]+", { matchWildcards: true });
+                    search.load("items");
+                    await context.sync();
+                    if (search.items.length > 0) {
+                        search.items[0].insertText(`表 ${tabCount}`, "Replace");
+                    }
+                }
+            }
         }
 
         await context.sync();
-        
         return {
-            figures: figResults.items.length,
-            tables: tabResults.items.length,
-            message: `已自动重排 ${figResults.items.length} 个图片标题和 ${tabResults.items.length} 个表格标题。`
+            figures: figCount,
+            tables: tabCount,
+            message: `重排完成：共发现 ${figCount} 个图片标题和 ${tabCount} 个表格标题。`
         };
     });
 }

@@ -1,68 +1,83 @@
 /**
  * 将简单的 Markdown 文本转换为 Word 富文本并插入指定位置
- * 支持：### 标题, **加粗**, 1. 列表, 以及换行
- * @param {Word.Range | Word.Body} target - 插入目标
- * @param {string} markdown - 待转换的 Markdown 文本
- * @param {string} location - 插入位置 ("Start", "End", "Replace")
+ * 支持：### 标题, **加粗**, 1. 列表, {{REF_N}} 占位符以及换行
  */
-export async function insertMarkdownAsRichText(target, markdown, location = "End") {
+
+/**
+ * 核心处理逻辑：将单行 Markdown 注入到 Range 或 ContentControl
+ * @param {Word.Range | Word.ContentControl} container 目标容器
+ * @param {string} line 文本行
+ * @param {Array} refMap 占位符映射 (可选)
+ */
+export async function processMarkdownLine(container, line, refMap = []) {
+  // 1. 处理标题 (### Title)
+  if (line.startsWith("###")) {
+    const titleText = line.replace(/^###\s*/, "");
+    const insertedRange = container.insertParagraph(titleText, "End");
+    insertedRange.font.bold = true;
+    insertedRange.font.size = 14;
+    insertedRange.spacingBefore = 12;
+    return;
+  } 
+  
+  if (line.startsWith("##")) {
+    const titleText = line.replace(/^##\s*/, "");
+    const insertedRange = container.insertParagraph(titleText, "End");
+    insertedRange.font.bold = true;
+    insertedRange.font.size = 16;
+    insertedRange.spacingBefore = 14;
+    return;
+  }
+
+  // 2. 基础段落处理：支持加粗和占位符
+  const insertedRange = container.insertParagraph("", "End");
+  
+  // 采用复合正则切分：同时匹配 **加粗** 和 {{REF_N}}
+  const parts = line.split(/(\*\*.*?\*\*|{{REF_\d+}})/g);
+  
+  for (const part of parts) {
+    if (!part) continue;
+
+    if (part.startsWith("**") && part.endsWith("**")) {
+      const boldText = part.substring(2, part.length - 2);
+      const run = insertedRange.insertText(boldText, "End");
+      run.font.bold = true;
+    } else if (part.startsWith("{{REF_") && part.endsWith("}}")) {
+      const refItem = refMap.find(m => m.placeholder === part);
+      if (refItem) {
+        insertedRange.insertOoxml(refItem.ooxml, "End");
+      } else {
+        insertedRange.insertText(part, "End");
+      }
+    } else {
+      insertedRange.insertText(part, "End");
+    }
+  }
+}
+
+/**
+ * 批量插入 Markdown 文本
+ */
+export async function insertMarkdownAsRichText(target, markdown, location = "End", refMap = []) {
   await Word.run(async (context) => {
-    // 处理 literal \n 字符串
+    // 兼容处理
     const cleanMarkdown = markdown.replace(/\\n/g, "\n");
-    const lines = cleanMarkdown.split("\n");
+    const lines = cleanMarkdown.split(/\r?\n/);
     
-    // 如果是替换模式，先清空内容
     if (location === "Replace") {
       target.insertText("", "Replace");
     }
 
-    let currentContainer = target;
-
     for (let i = 0; i < lines.length; i++) {
-      let line = lines[i].trim();
+      const line = lines[i].trim();
       if (!line) {
-        // 插入空行
-        currentContainer.insertParagraph("", "End");
+        if (i !== lines.length - 1) {
+          target.insertParagraph("", "End");
+        }
         continue;
       }
-
-      let insertedRange;
-      
-      // 1. 处理标题 (### Title)
-      if (line.startsWith("###")) {
-        const titleText = line.replace(/^###\s*/, "");
-        insertedRange = currentContainer.insertParagraph(titleText, "End");
-        insertedRange.font.bold = true;
-        insertedRange.font.size = 14;
-        insertedRange.spacingBefore = 12;
-      } 
-      else if (line.startsWith("##")) {
-        const titleText = line.replace(/^##\s*/, "");
-        insertedRange = currentContainer.insertParagraph(titleText, "End");
-        insertedRange.font.bold = true;
-        insertedRange.font.size = 16;
-        insertedRange.spacingBefore = 14;
-      }
-      // 2. 处理加粗 (**Text**) - 简化版：仅处理全行加粗或通过正则二次处理
-      else {
-        // 基础段落插入
-        insertedRange = currentContainer.insertParagraph("", "End");
-        
-        // 分解行内格式
-        // 匹配 **...**
-        const parts = line.split(/(\*\*.*?\*\*)/g);
-        for (const part of parts) {
-          if (part.startsWith("**") && part.endsWith("**")) {
-            const boldText = part.substring(2, part.length - 2);
-            const run = insertedRange.insertText(boldText, "End");
-            run.font.bold = true;
-          } else {
-            insertedRange.insertText(part, "End");
-          }
-        }
-      }
-      
-      await context.sync();
+      await processMarkdownLine(target, line, refMap);
     }
+    await context.sync();
   });
 }

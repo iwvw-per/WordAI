@@ -78,7 +78,7 @@ const DEFAULT_PROMPTS = [
     谨慎省略： 如果整合后语句极其冗长或别扭，并且括号内容并非核心关键信息（例如，非常基础的缩写全称），可以考虑省略。但要极其小心，避免丢失重要上下文或示例。 在提供的范例中，有时示例信息被省略了，你可以模仿这一点，但要判断是否会损失过多信息。
     代码/标识符旁括号： 对于紧跟在代码、文件名、类名旁的括号，通常直接移除括号。
     示例：视图 (views.py) 中 -> 视图也就是views.py中
-    示例：权限类 (admin_panel.permissions) -> 权限类 admin_panel.permissions``
+    示例：权限类 (admin_panel.permissions) -> 权限类 admin_panel.permissions
     句式微调与口语化倾向（Sentence Structure & Colloquial Touch）：
     
     使用“把”字句： 在合适的场景下，倾向于使用“把”字句。

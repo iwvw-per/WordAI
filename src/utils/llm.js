@@ -245,6 +245,30 @@ export async function callLLMStream(systemPrompt, userContent, onChunk, signal) 
 }
 
 /**
+ * 清理 AI 回复中的冗余信息（如引导语和代码块包裹）
+ * @param {string} text 
+ */
+export function cleanAiResponse(text) {
+  if (!text) return "";
+  
+  let result = text.trim();
+  // 1. 移除常见的 AI 引导语（支持多行）
+  const prefixes = [
+    /^([\s\n]*(\*\*|__)?(这里是|这是)?(修改后|润色后|翻译后|重写后|扩展后|缩写后|处理后)的?(内容|文本|结果|段落)?[\s\n]*(\*\*|__)?[\s\n]*[：:\n]+)/i,
+    /^(好的[，, ]?|当然[，, ]?|没问题[，, ]?)/i
+  ];
+  
+  for (const regex of prefixes) {
+    result = result.replace(regex, "");
+  }
+
+  // 2. 移除可能包裹的 Markdown 代码块
+  result = result.replace(/^```[a-zA-Z]*\n/i, "").replace(/\n```$/i, "");
+  
+  return result.trim();
+}
+
+/**
  * 测试 API 连接
  * @returns {Promise<{success: boolean, message: string}>}
  */
