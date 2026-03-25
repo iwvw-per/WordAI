@@ -457,3 +457,18 @@ select.form-input { cursor: pointer; padding-right: 24px; }
 @media (min-width: 440px) {
   .action-grid { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ==================== Settings Footer ==================== */
+.settings-footer {
+  margin-top: var(--space-xl);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+  text-align: center;
+  padding-bottom: var(--space-md);
+}
+.settings-footer p {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
