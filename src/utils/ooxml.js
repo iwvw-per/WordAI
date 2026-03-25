@@ -3,7 +3,7 @@ import * as format from "./format.js";
 
 const CC_TAG = "wordai_target";
 
-// ==================== 标记选区（高性能版） ====================
+// ==================== 标记选区（选区感知版） ====================
 
 export async function markSelection() {
   let results = [];
@@ -11,19 +11,8 @@ export async function markSelection() {
     try {
       const skipRules = storage.getSkipRules();
       const selection = context.document.getSelection();
-      const paragraphs = selection.paragraphs;
-      paragraphs.load(["items", "text", "style"]);
+      selection.load(["text", "isEmpty"]);
       await context.sync();
-
-      let workParagraphs = [...paragraphs.items];
-      if (workParagraphs.length === 0) {
-        const startPars = selection.getRange("Start").paragraphs;
-        startPars.load(["items", "text", "style"]);
-        await context.sync();
-        workParagraphs = [...startPars.items];
-      }
-
-      if (workParagraphs.length === 0) return;
 
       // 清理旧标记
       const existing = context.document.contentControls.getByTag(CC_TAG);
@@ -32,33 +21,49 @@ export async function markSelection() {
       for (const cc of existing.items) cc.delete(true);
       await context.sync();
 
-      const isSingle = workParagraphs.length === 1;
-      const refSearches = [
-        "\\[[0-9.,\\- ]@\\]",
-        "图 [0-9]@",
-        "表 [0-9]@",
-        "Fig. [0-9]@",
-        "Figure [0-9]@",
-        "Table [0-9]@"
-      ];
+      let targetRanges = [];
+      const text = selection.text.trim();
 
-      for (const p of workParagraphs) {
-        const text = p.text.trim();
-        if (!text) continue;
+      if (!text) {
+        // 选区为空，处理当前光标所在段落
+        const paragraphs = selection.paragraphs;
+        paragraphs.load(["items", "text", "style"]);
+        await context.sync();
+        if (paragraphs.items.length > 0) {
+          targetRanges = [paragraphs.items[0]];
+        }
+      } else {
+        // 选区不为空，直接处理选区
+        targetRanges = [selection];
+      }
 
-        // 过滤逻辑
-        const styleName = (p.style || "").toString().toLowerCase();
-        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(text) && text.length < 120;
+      for (const range of targetRanges) {
+        range.load(["text", "style"]);
+        await context.sync();
+        const rangeText = range.text.trim();
+        if (!rangeText) continue;
+
+        // 过滤标题（仅在处理全段落时且不是唯一段落时应用）
+        const styleName = (range.style || "").toString().toLowerCase();
+        const isHeaderPattern = /^(\s*\d+(\.\d+)*[\.\s\t])/.test(rangeText) && rangeText.length < 120;
         const isHeadingStyle = styleName.includes("heading") || styleName.includes("标题");
-
-        if (skipRules.headings && !isSingle && (isHeadingStyle || isHeaderPattern)) {
+        if (skipRules.headings && !text && (isHeadingStyle || isHeaderPattern)) {
           continue;
         }
 
-        // 搜索引用：并发收集 search 对象
+        // 搜索引用
+        const refSearches = [
+          "\\[[0-9.,\\- ]@\\]",
+          "图 [0-9]@",
+          "表 [0-9]@",
+          "Fig. [0-9]@",
+          "Figure [0-9]@",
+          "Table [0-9]@"
+        ];
+        
         const refMap = [];
         const searchPromises = refSearches.map(pattern => {
-          const matches = p.search(pattern, { matchWildcards: true });
+          const matches = range.search(pattern, { matchWildcards: true });
           matches.load("items");
           return matches;
         });
@@ -75,10 +80,8 @@ export async function markSelection() {
         
         if (refMap.length > 0) await context.sync();
 
-        let tokenizedText = text;
+        let tokenizedText = rangeText;
         const finalRefMap = [];
-        
-        // 按长度倒序，防止子串误替换
         const uniqueRefs = [];
         refMap.sort((a, b) => b.range.text.length - a.range.text.length).forEach(item => {
            if (!uniqueRefs.find(u => u.text === item.range.text)) {
@@ -92,10 +95,20 @@ export async function markSelection() {
           finalRefMap.push({ placeholder, ooxml: item.ooxml, original: item.text });
         });
 
-        const cc = p.insertContentControl();
+        const cc = range.insertContentControl();
         cc.tag = CC_TAG;
         cc.appearance = Word.ContentControlAppearance.hidden;
-        results.push({ text: tokenizedText, refMap: finalRefMap });
+        
+        // 捕获原始字体信息以备回写恢复
+        const font = range.font;
+        font.load(["name", "size", "color"]);
+        await context.sync();
+
+        results.push({ 
+          text: tokenizedText, 
+          refMap: finalRefMap, 
+          baseFont: { name: font.name, size: font.size, color: font.color }
+        });
       }
       await context.sync();
     } catch (err) {
@@ -105,9 +118,9 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 逐段回写（调用统一格式化逻辑） ====================
+// ==================== 逐段回写（支持格式恢复） ====================
 
-async function replaceSingleMarkedContent(newText, refMap) {
+async function replaceSingleMarkedContent(newText, refMap, baseFont) {
   await Word.run(async (context) => {
     const ccs = context.document.contentControls.getByTag(CC_TAG);
     ccs.load("items");
@@ -116,10 +129,11 @@ async function replaceSingleMarkedContent(newText, refMap) {
     if (ccs.items.length === 0) return;
     const cc = ccs.items[0];
     
-    // 清空并按行注入
+    // 强制先清空内容
     cc.insertText("", Word.InsertLocation.replace);
+    await context.sync();
+
     const lines = newText.split(/\r?\n/);
-    
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line && i !== lines.length - 1) {
@@ -127,7 +141,16 @@ async function replaceSingleMarkedContent(newText, refMap) {
         continue;
       }
       if (line) {
+        // processMarkdownLine 内部会处理加粗和引用
         await format.processMarkdownLine(cc, line, refMap);
+        
+        // 恢复基本字体属性（防止因清空导致的手动格式丢失）
+        if (baseFont) {
+          const range = cc.getRange();
+          range.font.name = baseFont.name;
+          if (baseFont.size) range.font.size = baseFont.size;
+          if (baseFont.color) range.font.color = baseFont.color;
+        }
       }
     }
 
@@ -150,7 +173,7 @@ export async function executeAndReplace(processText, onStatus, signal) {
   }
 
   const results = await markSelection();
-  if (!results || results.length === 0) throw new Error("无有效待处理段落");
+  if (!results || results.length === 0) throw new Error("请先选择要处理的文字内容");
 
   for (let i = 0; i < results.length; i++) {
     if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
@@ -164,7 +187,7 @@ export async function executeAndReplace(processText, onStatus, signal) {
 
       if (aiResult && aiResult.trim()) {
         if (onStatus) onStatus("processing", `正在应用修改 (${i + 1}/${results.length})...`, true);
-        await replaceSingleMarkedContent(aiResult, item.refMap);
+        await replaceSingleMarkedContent(aiResult, item.refMap, item.baseFont);
       } else {
         await Word.run(async (context) => {
           const ccs = context.document.contentControls.getByTag(CC_TAG);
