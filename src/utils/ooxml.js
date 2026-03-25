@@ -2,7 +2,7 @@ import * as storage from "./storage.js";
 
 const CC_TAG = "wordai_target";
 
-// ==================== 标记选区（选区感知版） ====================
+// ==================== 标记选区 ====================
 
 export async function markSelection() {
   let results = [];
@@ -10,7 +10,6 @@ export async function markSelection() {
     try {
       const skipRules = storage.getSkipRules();
       const selection = context.document.getSelection();
-      // 获取选区并加载必要属性
       selection.load(["text", "isEmpty", "style"]);
       await context.sync();
 
@@ -18,7 +17,7 @@ export async function markSelection() {
       const existing = context.document.contentControls.getByTag(CC_TAG);
       existing.load("items");
       await context.sync();
-      for (const cc of existing.items) cc.delete(true); 
+      for (const cc of existing.items) cc.delete(true);
       await context.sync();
 
       let targetRanges = [];
@@ -97,15 +96,21 @@ export async function markSelection() {
         cc.tag = CC_TAG;
         cc.appearance = Word.ContentControlAppearance.hidden;
         
-        // 捕获字体
         const font = range.font;
-        font.load(["name", "size", "color"]);
+        font.load(["name", "size", "color", "bold", "italic", "underline"]);
         await context.sync();
 
         results.push({ 
           text: tokenizedText, 
           refMap: finalRefMap, 
-          baseFont: { name: font.name, size: font.size, color: font.color }
+          baseFont: { 
+            name: font.name, 
+            size: font.size, 
+            color: font.color,
+            bold: font.bold,
+            italic: font.italic,
+            underline: font.underline
+          }
         });
       }
       await context.sync();
@@ -116,7 +121,7 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 回写（智能策略） ====================
+// ==================== 回写：保留引用角标版 ====================
 
 async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
   await Word.run(async (context) => {
@@ -127,45 +132,48 @@ async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
     if (ccs.items.length === 0) return;
     const cc = ccs.items[0];
     
-    // 将占位符替换回原始引用文本（纯文本模式）
-    let plainText = aiResult;
-    for (const ref of refMap) {
-      plainText = plainText.split(ref.placeholder).join(ref.original);
-    }
+    // 1. 清空内容并准备按需分段
+    cc.insertText("", Word.InsertLocation.replace);
+    await context.sync();
 
-    const lines = plainText.split(/\r?\n/).filter(l => l.trim());
-    const isSingleParagraph = lines.length <= 1;
-
-    if (isSingleParagraph) {
-      // ★ 单段直接替换
-      cc.insertText((lines[0] || plainText).trim(), Word.InsertLocation.replace);
-    } else {
-      // ★ 多段逐行插入
-      cc.insertText("", Word.InsertLocation.replace);
-      await context.sync();
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        if (i === 0) {
-          cc.insertText(line, Word.InsertLocation.end);
-        } else {
-          cc.insertParagraph(line, Word.InsertLocation.end);
-        }
-      }
-    }
+    // 2. 切分新文本行
+    const lines = aiResult.split(/\r?\n/).filter(line => line.trim());
     
-    // 恢复字体（增加安全检查，防止 InvalidArguments 错误）
-    if (baseFont) {
-      const range = cc.getRange();
-      if (baseFont.name) range.font.name = baseFont.name;
-      // Word API 不接受 null 或非正数体积作为 size
-      if (typeof baseFont.size === "number" && baseFont.size > 0) {
-        range.font.size = baseFont.size;
-      }
-      if (baseFont.color) range.font.color = baseFont.color;
+    for (let i = 0; i < lines.length; i++) {
+        const lineText = lines[i].trim();
+        if (!lineText) continue;
+
+        // 如果有多行且不是第一行，创建一个新段落承载内容
+        const insertionContainer = (i === 0) ? cc : cc.insertParagraph("", Word.InsertLocation.end);
+        
+        // 解析引用占位符并注入 (使用正则表达式切分避免丢失文本)
+        const parts = lineText.split(/({{REF_\d+}})/g);
+        for (const part of parts) {
+            if (!part) continue;
+            
+            if (part.startsWith("{{REF_") && part.endsWith("}}")) {
+                const ref = refMap.find(m => m.placeholder === part);
+                if (ref && ref.ooxml) {
+                    // ★ 核心：使用 insertOoxml 还原包含角标和链接的引用
+                    insertionContainer.insertOoxml(ref.ooxml, Word.InsertLocation.end);
+                } else {
+                    insertionContainer.insertText(part, Word.InsertLocation.end);
+                }
+            } else {
+                // 普通文本：应用基础字体属性
+                const run = insertionContainer.insertText(part, Word.InsertLocation.end);
+                if (baseFont) {
+                    run.font.name = baseFont.name;
+                    if (typeof baseFont.size === "number" && baseFont.size > 0) run.font.size = baseFont.size;
+                    if (baseFont.color) run.font.color = baseFont.color;
+                    run.font.bold = baseFont.bold;
+                    run.font.italic = baseFont.italic;
+                    run.font.underline = baseFont.underline;
+                }
+            }
+        }
     }
 
-    // ★ 关键修正：delete(true) 表示保留内容只删容器；delete(false) 会连带内容一起删除
     cc.delete(true); 
     await context.sync();
   });
