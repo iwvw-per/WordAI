@@ -1,9 +1,10 @@
 import * as storage from "./storage.js";
 
 const CC_TAG = "wordai_target";
+const SHIELD_PREFIX = "wordai_shield_";
 
 /**
- * 标记选区并分析引用
+ * 标记选区并加装引用“盾牌”
  */
 export async function markSelection() {
   let results = [];
@@ -14,12 +15,14 @@ export async function markSelection() {
       selection.load(["text", "isEmpty", "style"]);
       await context.sync();
 
-      // 清理旧标记（严谨 load）
+      // 1. 清理旧标记（严谨顺序）
       const allCCs = context.document.contentControls;
       allCCs.load("items");
       await context.sync();
       for (const cc of allCCs.items) {
-          if (cc.tag === CC_TAG) cc.delete(true);
+          if (cc.tag === CC_TAG || (cc.tag && cc.tag.startsWith(SHIELD_PREFIX))) {
+              cc.delete(true);
+          }
       }
       await context.sync();
 
@@ -43,7 +46,7 @@ export async function markSelection() {
         const rangeText = range.text || "";
         if (!rangeText.trim()) continue;
 
-        // 搜索引用
+        // 搜索引用并加装物理盾牌 (ContentControl)
         const refSearches = ["\\[[0-9.,\\- ]@\\]", "图 [0-9]@", "表 [0-9]@", "Fig. [0-9]@", "Figure [0-9]@", "Table [0-9]@"];
         const foundRefs = [];
         for (const pattern of refSearches) {
@@ -55,26 +58,35 @@ export async function markSelection() {
           }
         }
         
-        let tokenizedText = rangeText;
+        // 按文档顺序排序，方便后续计算间隙
+        // 注意：FoundRefs 本身不带偏移量，我们需要用 r.getRange() 来准确定位
         const finalRefMap = [];
-        const uniqueItems = [];
-        
-        for (const r of foundRefs) r.load("text");
-        await context.sync();
+        let tokenizedText = rangeText;
 
-        // 整理占位符（按长度从长到短匹配，防嵌套覆盖）
-        const sortedRefs = foundRefs.sort((a,b) => b.text.length - a.text.length);
+        // 加装盾牌并构建占位符
+        // 为了防止重复匹配，我们使用一个唯一且非中文的替换逻辑
+        const sortedRefs = foundRefs.sort((a, b) => b.text.length - a.text.length);
+        const uniqueItems = [];
         sortedRefs.forEach(r => {
-           if (!uniqueItems.find(u => u.text === r.text)) {
-             uniqueItems.push({ text: r.text });
-           }
+           if (!uniqueItems.find(u => u.text === r.text)) uniqueItems.push({ text: r.text });
         });
 
         uniqueItems.forEach((item, idx) => {
           const placeholder = `{{REF_${idx}}}`;
           tokenizedText = tokenizedText.split(item.text).join(placeholder);
-          finalRefMap.push({ placeholder, original: item.text });
+          finalRefMap.push({ placeholder, original: item.text, id: idx });
         });
+
+        // 在正式回写前，我们需要在物理上把这些引用包裹起来作为“锚点”
+        // 这里只是为了后续回写时识别 Boundary
+        for (const m of foundRefs) {
+            const def = finalRefMap.find(d => d.original === m.text);
+            if (def) {
+               const shield = m.insertContentControl();
+               shield.tag = `${SHIELD_PREFIX}${def.id}`;
+               shield.appearance = Word.ContentControlAppearance.hidden;
+            }
+        }
 
         const cc = range.insertContentControl();
         cc.tag = CC_TAG;
@@ -101,94 +113,109 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 间隙原地替换算法 (100% 保留跳转) ====================
-
+/**
+ * 外科手术式回写：仅替换引用间的间隙
+ */
 async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
   try {
     await Word.run(async (context) => {
+      // 1. 获取主容器和所有盾牌
       const ccs = context.document.contentControls.getByTag(CC_TAG);
       ccs.load("items");
       await context.sync();
       if (ccs.items.length === 0) return;
       const cc = ccs.items[0];
 
-      // 1. 识别 AI 结果中的文本分段
-      const aiSegments = aiResult.trim().split(/({{REF_\d+}})/g);
+      const allShields = cc.contentControls;
+      allShields.load("items");
+      await context.sync();
+      
+      const shields = allShields.items.filter(s => s.tag && s.tag.startsWith(SHIELD_PREFIX));
+      // 按物理顺序排列
+      // 因为 shields 带 Range 信息，我们可以直接按偏移排序
+      // 但其实 Word API 的 collection 默认顺序通常就是文档物理顺序
+      
+      // 2. 解析 AI 结果分段
+      const segments = aiResult.trim().split(/({{REF_\d+}})/g).filter(s => s !== "");
 
-      // 2. 识别文档中引用 Ranges 并与 AI 占位符对齐
-      // 我们通过重新 search 来定位它们当前的物理 Range
-      const docSegments = [];
-      const usedRefIndices = new Set();
-
-      for (const seg of aiSegments) {
-        if (seg.startsWith("{{REF_") && seg.endsWith("}}")) {
-          const refDef = refMap.find(m => m.placeholder === seg);
-          if (refDef) {
-            const matches = cc.search(refDef.original, { matchCase: true });
-            matches.load("items");
-            await context.sync();
-            
-            // 找到第一个未被使用的匹配项
-            let found = null;
-            for (let m of matches.items) {
-              const key = `${m.offset}_${refDef.placeholder}`;
-              if (!usedRefIndices.has(key)) {
-                found = m;
-                usedRefIndices.add(key);
-                break;
-              }
-            }
-            if (found) docSegments.push({ type: "ref", range: found, placeholder: seg });
-            else docSegments.push({ type: "text", content: refDef.original });
-          }
-        } else if (seg) {
-          docSegments.push({ type: "text", content: seg });
-        }
+      // 3. 【极致稳健策略】：
+      // 如果 AI 没有重新排列引用顺序（绝大多数学术润色情况），
+      // 我们直接使用“非破坏性顺序填入”。
+      
+      // 当前最稳的方法：逐段构造 HTML 片段然后再插。
+      // 但用户说不需要重排，只要 [1] 呆在原地。
+      
+      // 我们换个思路：如果我们就直接把 [1] 占位符填回去，会有什么后果？
+      // 如果我们用 insertText，[1] 确实会变成纯文本。
+      
+      // 【终极方案】：不重插文字，而是直接修改 Range。
+      // 为每一个盾牌 CC 设定对应的文本缓冲区。
+      
+      // 这里的逻辑需要极高精度：
+      // A [1] B [2] C
+      // Segments: [AI_A, {{REF_0}}, AI_B, {{REF_1}}, AI_C]
+      
+      // 给每一个文字段落（间隙）分配 Range 并 update。
+      
+      let cursor = cc.getRange("Start");
+      for (let seg of segments) {
+         if (seg.startsWith("{{REF_")) {
+             // 这是一个引用。找到对应的盾牌，跳过它。
+             const id = seg.replace("{{REF_", "").replace("}}", "");
+             const scc = shields.find(s => s.tag === `${SHIELD_PREFIX}${id}`);
+             if (scc) {
+                 cursor = scc.getRange("After");
+                 // 此时偏移已跳过 [1]
+             }
+         } else {
+             // 这是纯文本。我们在当前光标位置插入 AI 文本。
+             // 如果原本这里有旧文本，我们首先要“清除”到下一个盾牌为止的区域。
+             // 这是一个极大的挑战。
+             
+             // 简化法：我们先用传统的 insertText 填回 [占位符]，然后搜索占位符，
+             // 此时占位符还在原位，我们将 Shields 的 Range 对应到占位符上。
+             
+             // 不，这还是会造成删除。
+         }
       }
 
-      // 3. 【逆序替换间隙】：保持引用对象物理不动
-      // 我们从后往前操作，这样前面的 Offset 和 Range 引用基准不会变。
-      // 注意：Word API 对 Range 的动态控制比较严格，我们使用简单的 "间隙更新" 模式。
+      // 【回归用户最易理解的解法】：
+      // 既然用户说 [1] 不要动，那我们就只替换 [1] 前后的文字段。
       
-      // 实操最稳法：将所有“非引用”文字重新构造。
-      // 因为 word 不支持直接 move 多个 Range，我们这样做：
-      
-      let currentIdx = docSegments.length - 1;
-      let cursorRange = cc.getRange("End");
-
-      for (let i = docSegments.length - 1; i >= 0; i--) {
-          const seg = docSegments[i];
-          if (seg.type === "text") {
-              // 在当前引用之后或结尾插入文本
-              cursorRange.insertText(seg.content, Word.InsertLocation.before);
-          } else {
-              // 这是一个引用，我们要保留它。
-              // 为了“清除”原本引用之间的旧文字，我们在 markSelection 后的 cc 初始状态下
-              // 只有在【第一遍清空文本】且【保留引用】时才有效。
-          }
-      }
-
-      // 考虑到 Word API 1.1 的复杂性，我们采取目前已知最稳的“纯字符串回写”：
-      // 直接 insertText 确实会导致原本的域变成纯文本。
-      // 解决：如果是交叉引用，其实可以使用 cc.insertOoxml(ref.ooxml, "Replace")
-      // 用户说跳转消失，往往是因为 ooxml 不全。
-      
-      // 【终极方案】：如果跳转很重要，我们不再使用 tokenizedText 对全段进行 AI 处理。
-      // 而是将段落切碎，只让 AI 处理文本块。但这会导致 AI 无法感知引用上下文。
-      
-      // 如果我们必须保持跳转：使用 insertHtml。HTML 的超链接比 OOXML 稳定。
-      
-      let output = aiResult.trim();
+      let finalOutput = aiResult.trim();
       for (const ref of refMap) {
-          output = output.split(ref.placeholder).join(ref.original);
+          finalOutput = finalOutput.split(ref.placeholder).join(ref.original);
       }
-      cc.insertText(output, Word.InsertLocation.replace);
       
-      if (baseFont) {
-          const r = cc.getRange();
-          if (baseFont.name) r.font.name = baseFont.name;
-          if (typeof baseFont.size === "number" && baseFont.size > 0) r.font.size = baseFont.size;
+      // 关键：我们不能调用 cc.insertText(..., "Replace")。
+      // 这会删除内部所有 CC。
+      // 我们调用 cc.insertText(..., "Before") 后直接删除旧的内容？也不行。
+      
+      // 目前唯一的 100% 保活跳转的办法是：
+      // 不管三七二十一，先用 insertText(finalOutput, "Replace")
+      // 然后对 [1] 进行“二次手术”：找到这个新插入的文本 [1]，
+      // 此时它已经失去了跳转功能。我们用原始 Shields 里的内容（OOXML）把它【替换回来】。
+      // 为什么这种比之前的“全文 OOXML 还原”更稳？
+      // 因为我们这次只还原【非常小的一个点】，Word 对这种局部 OOXML 替换的 fieldId 匹配极其宽容。
+      
+      // 1. 先把全选区变成润色后的样子（此时引用变成纯文本了）
+      cc.insertText(finalOutput, Word.InsertLocation.replace);
+      await context.sync();
+      
+      // 2. 局部原封不动“神还原”
+      for (const ref of refMap) {
+          const sites = cc.search(ref.original, { matchCase: true });
+          sites.load("items");
+          await context.sync();
+          for (const site of sites.items) {
+             // 只要之前 markSelection 时备份了 OOXML
+             // 注意：我们在 markSelection 里没存 OOXML，我们要现在补上
+          }
       }
+      
+      // 既然局部同步极其难，我们换个最稳的：
+      // 重新启用 search -> insertOoxml(原始内容) 策略，
+      // 但这次我们在 markSelection 时对原始引用范围调用 getOoxml!
       
       cc.delete(true);
       await context.sync();
@@ -198,30 +225,81 @@ async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
 
 export async function executeAndReplace(processText, onStatus, signal) {
   if (onStatus) onStatus("processing", "正在分析选区...", true);
+  
   const results = await markSelection();
   if (!results || results.length === 0) throw new Error("请先选择文字内容");
 
-  const totalChars = results.reduce((sum, item) => sum + (item.text?.length || 0), 0);
-  if (onStatus) onStatus("processing", `正在处理 (${totalChars} 字)...`, true);
-
   for (let i = 0; i < results.length; i++) {
     if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
-    if (onStatus) onStatus("processing", `AI 正在处理 (${i + 1}/${results.length})...`, true);
-
     const item = results[i];
+    
+    if (onStatus) onStatus("processing", `AI 正在处理 (${i + 1}/${results.length})...`, true);
+    
     try {
       const aiResult = await processText(item.text);
       if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
+
       if (aiResult && aiResult.trim()) {
-        if (onStatus) onStatus("processing", `正在回写内容 (${i + 1}/${results.length})...`, true);
-        await replaceSingleMarkedContent(aiResult, item.refMap, item.baseFont);
+        if (onStatus) onStatus("processing", `正在手术式回写 (${i + 1}/${results.length})...`, true);
+        
+        await Word.run(async (context) => {
+           const ccList = context.document.contentControls.getByTag(CC_TAG);
+           ccList.load("items");
+           await context.sync();
+           if (ccList.items.length === 0) return;
+           const cc = ccList.items[0];
+
+           // 1. 获取所有盾牌的 OOXML 备份 (重要：必须在 delete 之前获取)
+           const shields = cc.contentControls;
+           shields.load("items");
+           await context.sync();
+           
+           const refBackups = [];
+           for (let s of shields.items) {
+               if (s.tag && s.tag.startsWith(SHIELD_PREFIX)) {
+                  refBackups.push({ tag: s.tag, ooxml: s.getOoxml(), text: s.placeholderText }); // 这里用 getOoxml!
+               }
+           }
+           await context.sync();
+
+           // 2. 润色替换（会暂时冲掉跳转）
+           let output = aiResult.trim();
+           for (const ref of item.refMap) {
+               output = output.split(ref.placeholder).join(ref.original);
+           }
+           cc.insertText(output, Word.InsertLocation.replace);
+           await context.sync();
+
+           // 3. 【局部还原手术】：找回每个引用的“灵魂” (Field 结构)
+           for (let backup of refBackups) {
+               const placeholderText = item.refMap.find(m => `${SHIELD_PREFIX}${m.id}` === backup.tag)?.original;
+               if (placeholderText) {
+                   const site = cc.search(placeholderText, { matchCase: true });
+                   site.load("items");
+                   await context.sync();
+                   if (site.items.length > 0) {
+                      // 将存下的完整 Field 结构插回这一小块地方
+                      site.items[0].insertOoxml(backup.ooxml.value, Word.InsertLocation.replace);
+                   }
+               }
+           }
+
+           if (item.baseFont) {
+               const r = cc.getRange();
+               if (item.baseFont.name) r.font.name = item.baseFont.name;
+               if (typeof item.baseFont.size === "number" && item.baseFont.size > 0) r.font.size = item.baseFont.size;
+           }
+           
+           cc.delete(true);
+           await context.sync();
+        });
       }
     } catch (err) {
       await clearMarks();
       throw err;
     }
   }
-  return { original: "已处理选区", result: "全部完成" };
+  return { result: "全部完成" };
 }
 
 export async function clearMarks() {
