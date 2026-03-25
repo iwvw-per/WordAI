@@ -2,8 +2,9 @@ import * as storage from "./storage.js";
 
 const CC_TAG = "wordai_target";
 
-// ==================== 标记选区（稳健版） ====================
-
+/**
+ * 标记选区或当前段落
+ */
 export async function markSelection() {
   let results = [];
   await Word.run(async (context) => {
@@ -121,7 +122,7 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 稳健回写逻辑 ====================
+// ==================== 改良回写：搜索并还原策略 ====================
 
 async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
   try {
@@ -133,67 +134,54 @@ async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
       if (ccs.items.length === 0) return;
       const cc = ccs.items[0];
       
-      // 1. 清空内容
-      cc.insertText("", Word.InsertLocation.replace);
+      // 1. 获取 AI 回复并确保格式清理
+      const finalText = aiResult.trim();
+      if (!finalText) return;
+
+      // 2. 先将带占位符的文本整体填入，保留选区物理位置
+      cc.insertText(finalText, Word.InsertLocation.replace);
       await context.sync();
 
-      // 2. 切分并注入
-      const lines = aiResult.split(/\r?\n/).filter(line => line.trim());
-      
-      for (let i = 0; i < lines.length; i++) {
-        const lineText = lines[i].trim();
-        if (!lineText) continue;
+      // 3. 逐个搜寻并还原引用占位符（最稳健的方法，不破坏段落结构）
+      for (const ref of refMap) {
+        const searchResults = cc.search(ref.placeholder, { matchCase: true });
+        searchResults.load("items");
+        await context.sync();
 
-        // 避免在 ContentControl 内部产生多余空段
-        let insertionRange;
-        if (i === 0) {
-            insertionRange = cc.getRange();
-        } else {
-            insertionRange = cc.insertParagraph("", Word.InsertLocation.end);
-        }
-        
-        const parts = lineText.split(/({{REF_\d+}})/g);
-        for (const part of parts) {
-            if (!part) continue;
-            
-            if (part.startsWith("{{REF_") && part.endsWith("}}")) {
-                const ref = refMap.find(m => m.placeholder === part);
-                if (ref && ref.ooxml) {
-                    insertionRange.insertOoxml(ref.ooxml, Word.InsertLocation.end);
-                } else {
-                    insertionRange.insertText(part, Word.InsertLocation.end);
-                }
-            } else {
-                const run = insertionRange.insertText(part, Word.InsertLocation.end);
-                // 极度安全的字体恢复逻辑
-                if (baseFont) {
-                    try {
-                        if (baseFont.name) run.font.name = baseFont.name;
-                        if (typeof baseFont.size === "number" && baseFont.size > 0) run.font.size = baseFont.size;
-                        if (baseFont.color && typeof baseFont.color === "string") run.font.color = baseFont.color;
-                        if (typeof baseFont.bold === "boolean") run.font.bold = baseFont.bold;
-                        if (typeof baseFont.italic === "boolean") run.font.italic = baseFont.italic;
-                        if (baseFont.underline && baseFont.underline !== "None") run.font.underline = baseFont.underline;
-                    } catch (fontErr) {
-                        // 忽略单个字体属性赋值错误，防止中断整个流程
-                        console.warn("Font apply warning:", fontErr.message);
-                    }
-                }
-            }
+        if (searchResults.items.length > 0) {
+          for (const foundRange of searchResults.items) {
+            // 使用 insertOoxml 还原包含角标、链接、样式的原始引用内容
+            foundRange.insertOoxml(ref.ooxml, Word.InsertLocation.replace);
+          }
         }
       }
 
+      // 4. 应用基础字体属性（全方位防护）
+      const docRange = cc.getRange();
+      if (baseFont) {
+        try {
+          if (baseFont.name) docRange.font.name = baseFont.name;
+          if (typeof baseFont.size === "number" && baseFont.size > 0) docRange.font.size = baseFont.size;
+          if (baseFont.color && typeof baseFont.color === "string") docRange.font.color = baseFont.color;
+          if (typeof baseFont.bold === "boolean") docRange.font.bold = baseFont.bold;
+          if (typeof baseFont.italic === "boolean") docRange.font.italic = baseFont.italic;
+          if (baseFont.underline && baseFont.underline !== "None") docRange.font.underline = baseFont.underline;
+        } catch (fErr) {
+          console.warn("Recover base font failed:", fErr.message);
+        }
+      }
+
+      // 5. 任务完成，卸载容器
       cc.delete(true); 
       await context.sync();
     });
   } catch (err) {
-    console.error("replaceSingleMarkedContent error:", err);
-    // 向上传递更具描述性的错误
+    console.error("replaceSingleMarkedContent critical error:", err);
     throw new Error(`回写失败: ${err.message}`);
   }
 }
 
-// ==================== 执行入口 ====================
+// ==================== 批量串行执行 ====================
 
 export async function executeAndReplace(processText, onStatus, signal) {
   if (onStatus) onStatus("processing", "正在分析选区...");
