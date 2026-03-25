@@ -2,7 +2,7 @@ import * as storage from "./storage.js";
 
 const CC_TAG = "wordai_target";
 
-// ==================== 标记选区 ====================
+// ==================== 标记选区（稳健版） ====================
 
 export async function markSelection() {
   let results = [];
@@ -121,32 +121,37 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 回写：保留引用角标版 ====================
+// ==================== 稳健回写逻辑 ====================
 
 async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
-  await Word.run(async (context) => {
-    const ccs = context.document.contentControls.getByTag(CC_TAG);
-    ccs.load("items");
-    await context.sync();
+  try {
+    await Word.run(async (context) => {
+      const ccs = context.document.contentControls.getByTag(CC_TAG);
+      ccs.load("items");
+      await context.sync();
 
-    if (ccs.items.length === 0) return;
-    const cc = ccs.items[0];
-    
-    // 1. 清空内容并准备按需分段
-    cc.insertText("", Word.InsertLocation.replace);
-    await context.sync();
+      if (ccs.items.length === 0) return;
+      const cc = ccs.items[0];
+      
+      // 1. 清空内容
+      cc.insertText("", Word.InsertLocation.replace);
+      await context.sync();
 
-    // 2. 切分新文本行
-    const lines = aiResult.split(/\r?\n/).filter(line => line.trim());
-    
-    for (let i = 0; i < lines.length; i++) {
+      // 2. 切分并注入
+      const lines = aiResult.split(/\r?\n/).filter(line => line.trim());
+      
+      for (let i = 0; i < lines.length; i++) {
         const lineText = lines[i].trim();
         if (!lineText) continue;
 
-        // 如果有多行且不是第一行，创建一个新段落承载内容
-        const insertionContainer = (i === 0) ? cc : cc.insertParagraph("", Word.InsertLocation.end);
+        // 避免在 ContentControl 内部产生多余空段
+        let insertionRange;
+        if (i === 0) {
+            insertionRange = cc.getRange();
+        } else {
+            insertionRange = cc.insertParagraph("", Word.InsertLocation.end);
+        }
         
-        // 解析引用占位符并注入 (使用正则表达式切分避免丢失文本)
         const parts = lineText.split(/({{REF_\d+}})/g);
         for (const part of parts) {
             if (!part) continue;
@@ -154,32 +159,41 @@ async function replaceSingleMarkedContent(aiResult, refMap, baseFont) {
             if (part.startsWith("{{REF_") && part.endsWith("}}")) {
                 const ref = refMap.find(m => m.placeholder === part);
                 if (ref && ref.ooxml) {
-                    // ★ 核心：使用 insertOoxml 还原包含角标和链接的引用
-                    insertionContainer.insertOoxml(ref.ooxml, Word.InsertLocation.end);
+                    insertionRange.insertOoxml(ref.ooxml, Word.InsertLocation.end);
                 } else {
-                    insertionContainer.insertText(part, Word.InsertLocation.end);
+                    insertionRange.insertText(part, Word.InsertLocation.end);
                 }
             } else {
-                // 普通文本：应用基础字体属性
-                const run = insertionContainer.insertText(part, Word.InsertLocation.end);
+                const run = insertionRange.insertText(part, Word.InsertLocation.end);
+                // 极度安全的字体恢复逻辑
                 if (baseFont) {
-                    run.font.name = baseFont.name;
-                    if (typeof baseFont.size === "number" && baseFont.size > 0) run.font.size = baseFont.size;
-                    if (baseFont.color) run.font.color = baseFont.color;
-                    run.font.bold = baseFont.bold;
-                    run.font.italic = baseFont.italic;
-                    run.font.underline = baseFont.underline;
+                    try {
+                        if (baseFont.name) run.font.name = baseFont.name;
+                        if (typeof baseFont.size === "number" && baseFont.size > 0) run.font.size = baseFont.size;
+                        if (baseFont.color && typeof baseFont.color === "string") run.font.color = baseFont.color;
+                        if (typeof baseFont.bold === "boolean") run.font.bold = baseFont.bold;
+                        if (typeof baseFont.italic === "boolean") run.font.italic = baseFont.italic;
+                        if (baseFont.underline && baseFont.underline !== "None") run.font.underline = baseFont.underline;
+                    } catch (fontErr) {
+                        // 忽略单个字体属性赋值错误，防止中断整个流程
+                        console.warn("Font apply warning:", fontErr.message);
+                    }
                 }
             }
         }
-    }
+      }
 
-    cc.delete(true); 
-    await context.sync();
-  });
+      cc.delete(true); 
+      await context.sync();
+    });
+  } catch (err) {
+    console.error("replaceSingleMarkedContent error:", err);
+    // 向上传递更具描述性的错误
+    throw new Error(`回写失败: ${err.message}`);
+  }
 }
 
-// ==================== 批量串行执行 ====================
+// ==================== 执行入口 ====================
 
 export async function executeAndReplace(processText, onStatus, signal) {
   if (onStatus) onStatus("processing", "正在分析选区...");
@@ -193,15 +207,13 @@ export async function executeAndReplace(processText, onStatus, signal) {
   }
 
   const results = await markSelection();
-  if (!results || results.length === 0) throw new Error("请先选择要处理的文字内容");
+  if (!results || results.length === 0) throw new Error("请先选择文字内容");
 
   const totalChars = results.reduce((sum, item) => sum + (item.text?.length || 0), 0);
   if (onStatus) onStatus("processing", `正在处理 (${totalChars} 字)...`);
 
   for (let i = 0; i < results.length; i++) {
     if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
-
-    if (onStatus) onStatus("processing", `AI 正在处理 (${i + 1}/${results.length})...`, true);
 
     const item = results[i];
     try {
