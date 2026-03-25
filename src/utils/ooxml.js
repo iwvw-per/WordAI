@@ -1,5 +1,4 @@
 import * as storage from "./storage.js";
-import * as format from "./format.js";
 
 const CC_TAG = "wordai_target";
 
@@ -22,11 +21,9 @@ export async function markSelection() {
       await context.sync();
 
       let targetRanges = [];
-      // 更加严谨的选区判定：非空且长度大于0
       const isRealSelection = !selection.isEmpty && selection.text && selection.text.length > 0;
 
       if (!isRealSelection) {
-        // 选区为空，处理当前所在段落
         const paragraphs = selection.paragraphs;
         paragraphs.load(["items", "text", "style"]);
         await context.sync();
@@ -34,12 +31,11 @@ export async function markSelection() {
           targetRanges = [paragraphs.items[0]];
         }
       } else {
-        // 使用精确选区
         targetRanges = [selection];
       }
 
       for (const range of targetRanges) {
-        range.load(["text", "style", "font"]);
+        range.load(["text", "style"]);
         await context.sync();
         const rangeText = range.text || "";
         if (!rangeText.trim()) continue;
@@ -100,24 +96,15 @@ export async function markSelection() {
         cc.tag = CC_TAG;
         cc.appearance = Word.ContentControlAppearance.hidden;
         
-        // 全量捕获字体属性，包括上标/下标等关键排版信息
+        // 捕获字体
         const font = range.font;
-        font.load(["name", "size", "color", "bold", "italic", "underline", "superscript", "subscript"]);
+        font.load(["name", "size", "color"]);
         await context.sync();
 
         results.push({ 
           text: tokenizedText, 
           refMap: finalRefMap, 
-          baseFont: { 
-            name: font.name, 
-            size: font.size, 
-            color: font.color,
-            bold: font.bold,
-            italic: font.italic,
-            underline: font.underline,
-            superscript: font.superscript,
-            subscript: font.subscript
-          }
+          baseFont: { name: font.name, size: font.size, color: font.color }
         });
       }
       await context.sync();
@@ -128,7 +115,7 @@ export async function markSelection() {
   return results;
 }
 
-// ==================== 逐段回写（全量格式恢复） ====================
+// ==================== 回写（智能策略：单段直替 vs 多段逐行） ====================
 
 async function replaceSingleMarkedContent(newText, refMap, baseFont) {
   await Word.run(async (context) => {
@@ -139,36 +126,45 @@ async function replaceSingleMarkedContent(newText, refMap, baseFont) {
     if (ccs.items.length === 0) return;
     const cc = ccs.items[0];
     
-    // 清空并预设基础格式
-    cc.insertText("", Word.InsertLocation.replace);
-    await context.sync();
+    // 将占位符替换回原始引用文本（纯文本模式）
+    let plainText = newText;
+    for (const ref of refMap) {
+      plainText = plainText.split(ref.placeholder).join(ref.original);
+    }
 
-    const lines = newText.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line && i !== lines.length - 1) {
-        cc.insertParagraph("", Word.InsertLocation.end);
-        continue;
-      }
-      if (line) {
-        await format.processMarkdownLine(cc, line, refMap);
-        
-        // 恢复全量字体属性，解决“字体变大/变小”或“上标失效”的问题
-        const range = cc.getRange();
-        if (baseFont) {
-          range.font.name = baseFont.name;
-          if (baseFont.size) range.font.size = baseFont.size;
-          if (baseFont.color) range.font.color = baseFont.color;
-          range.font.bold = baseFont.bold;
-          range.font.italic = baseFont.italic;
-          range.font.underline = baseFont.underline;
-          // 注意：不要全局覆盖 superscript/subscript，否则会破坏正文中的引用
-          // 仅在非引用部分应用，或由 processMarkdownLine 处理特殊格式
+    // 判断是否为单段纯文本（最常见的学术润色场景）
+    const lines = plainText.split(/\r?\n/).filter(l => l.trim());
+    const isSingleParagraph = lines.length <= 1;
+
+    if (isSingleParagraph) {
+      // ★ 单段：直接 insertText 替换，保留原段落结构
+      const finalText = (lines[0] || plainText).trim();
+      cc.insertText(finalText, Word.InsertLocation.replace);
+    } else {
+      // ★ 多段：清空后逐行插入
+      cc.insertText("", Word.InsertLocation.replace);
+      await context.sync();
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        if (i === 0) {
+          cc.insertText(line, Word.InsertLocation.end);
+        } else {
+          cc.insertParagraph(line, Word.InsertLocation.end);
         }
       }
     }
+    
+    // 恢复字体
+    if (baseFont) {
+      const range = cc.getRange();
+      if (baseFont.name) range.font.name = baseFont.name;
+      if (baseFont.size) range.font.size = baseFont.size;
+      if (baseFont.color) range.font.color = baseFont.color;
+    }
 
-    cc.delete(true);
+    cc.delete(false); // false = 仅删除容器，保留内容
     await context.sync();
   });
 }
