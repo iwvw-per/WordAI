@@ -178,24 +178,44 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags, baseFo
       const endAnchor = ccs.items.find(c => c.tag === boundaryTags.end);
       if (!startAnchor || !endAnchor) return;
 
-      const segments = aiResult.trim().split(/({{REF_\d+}})/g);
-      let insertionPoint = startAnchor.getRange("After");
+      // 【1. 核心备份】：在任何改动前，克隆引用对象的 OOXML
+      const refBackups = new Map();
+      for (const r of refMap) {
+          const s = ccs.items.find(c => c.tag === `${SHIELD_PREFIX}${r.id}`);
+          if (s) {
+              const xml = s.getOoxml();
+              await context.sync();
+              refBackups.set(parseInt(r.id), xml.value);
+          }
+      }
 
-      // 分步同步填缝 (保活核心)
+      // 【2. 容错分段识别】：支持 {{ REF_N }} 这种带空格的格式
+      const segments = aiResult.trim().split(/(\{\{\s*REF_\d+\s*\}\})/gi);
+      let insertionPoint = startAnchor.getRange("After");
+      const placedIds = new Set();
+
       for (const seg of segments) {
           if (!seg) continue;
-          if (seg.startsWith("{{REF_") && seg.endsWith("}}")) {
-              const id = seg.match(/\d+/)[0];
+          
+          const refMatch = seg.match(/\{\{\s*REF_(\d+)\s*\}\}/i);
+          if (refMatch) {
+              const id = parseInt(refMatch[1]);
               const shield = ccs.items.find(c => c.tag === `${SHIELD_PREFIX}${id}`);
-              if (shield) insertionPoint = shield.getRange("After");
+              if (shield) {
+                  insertionPoint = shield.getRange("After");
+                  placedIds.add(id);
+              }
           } else {
+              // 寻找下一个存活的锚点
               let nextAnchor = null;
-              const nextIdx = segments.indexOf(seg) + 1;
-              if (nextIdx < segments.length) {
-                  const ns = segments[nextIdx];
-                  if (ns.startsWith("{{REF_")) {
-                      const nid = ns.match(/\d+/)[0];
+              const curIdx = segments.indexOf(seg);
+              for (let j = curIdx + 1; j < segments.length; j++) {
+                  const ns = segments[j];
+                  const m = ns.match(/\{\{\s*REF_(\d+)\s*\}\}/i);
+                  if (m) {
+                      const nid = parseInt(m[1]);
                       nextAnchor = ccs.items.find(c => c.tag === `${SHIELD_PREFIX}${nid}`);
+                      if (nextAnchor) break;
                   }
               }
               if (!nextAnchor) nextAnchor = endAnchor;
@@ -204,6 +224,20 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags, baseFo
               gap.insertText(seg, Word.InsertLocation.replace);
               await context.sync();
           }
+      }
+
+      // 【3. 强行还原】：对于 AI 擅自删除的引文，在段落末尾强制归位
+      const orphans = refMap.filter(r => !placedIds.has(parseInt(r.id)));
+      if (orphans.length > 0) {
+          const endLoc = endAnchor.getRange("Before");
+          for (const o of orphans) {
+              const xmlValue = refBackups.get(parseInt(o.id));
+              if (xmlValue) {
+                  endLoc.insertText(" ", Word.InsertLocation.before);
+                  endLoc.insertOoxml(xmlValue, Word.InsertLocation.before);
+              }
+          }
+          await context.sync();
       }
 
       const finalR = startAnchor.getRange("After").expandTo(endAnchor.getRange("Before"));

@@ -236,8 +236,8 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
   try {
     const result = await ooxml.executeAndReplace(
       async (text) => {
-        const protectionNotice = "\n\n注意：文中的 {{REF_N}} 是受保护的引用占位符，请务必原封不动保留并放置在正确的语义位置。";
-        const raw = await llm.callLLM(systemPrompt + protectionNotice, text, currentAbortController.signal);
+        const redLine = "\n\n【绝对禁令】：文中的 {{REF_N}} 是物理引用锚点，你必须原封不动地保留所有 {{REF_N}}（包括编号），并将其放置在改写后对应的语义位置。严禁删除、修改或合并这些占位符！\n\n";
+        const raw = await llm.callLLM(redLine + systemPrompt + redLine, text, currentAbortController.signal);
         return llm.cleanAiResponse(raw);
       },
       (type, msg, canCancel) => showInlineStatus(type, msg, canCancel),
