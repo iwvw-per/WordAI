@@ -6,104 +6,107 @@ const BOU_END = "wordai_boundary_end";
 const REF_BOOKMARK_PREFIX = "wordai_ref_";
 
 /**
- * 标记选区并建立参考文献索引
- * 深度修复：隔离 results 数组，避免逻辑干扰
+ * 标记选区：优先锁定选区，确保稳定性 6.2
  */
 export async function markSelection() {
   let finalItems = [];
-  await Word.run(async (context) => {
-    try {
+  try {
+    await Word.run(async (context) => {
       const doc = context.document;
+      
+      // 1. 【优先级第1】：第一时间捕获选区状态
       const selection = doc.getSelection();
       selection.load(["text", "isEmpty"]);
       await context.sync();
 
-      // 1. 系统级清理
-      const allCCs = doc.contentControls;
-      allCCs.load("items");
+      // 确定目标 Range
+      let mainRanges = [];
+      if (selection.isEmpty) {
+        const ps = selection.paragraphs;
+        ps.load("items");
+        await context.sync();
+        if (ps.items.length > 0) mainRanges = [ps.items[0]];
+      } else {
+        mainRanges = [selection];
+      }
+
+      if (mainRanges.length === 0) return;
+
+      // 2. 【清理旧标记】
+      const ccs = doc.contentControls;
+      ccs.load("items");
       await context.sync();
-      for (const cc of allCCs.items) {
-          const tag = cc.tag || "";
-          if (tag.includes(BOU_START) || tag.includes(BOU_END) || tag.includes(SHIELD_PREFIX)) {
+      for (const cc of ccs.items) {
+          const t = cc.tag || "";
+          if (t.includes(BOU_START) || t.includes(BOU_END) || t.includes(SHIELD_PREFIX)) {
               cc.delete(true);
           }
       }
       await context.sync();
 
-      // 2. 书签化参考文献 (自愈基础)
-      // 仅在首次分析时进行全量扫描 (基于性能考虑，我们可以只搜本段或常见模式)
-      const refParas = doc.body.paragraphs.search("^\\[[0-9]+\\]", { matchWildcards: true });
-      refParas.load("items");
-      await context.sync();
-      
-      for (const p of refParas.items) {
-          p.load("text");
-      }
-      await context.sync();
-
-      for (const p of refParas.items) {
-          const match = p.text.match(/^\[(\d+)\]/);
-          if (match) {
-              doc.bookmarks.add(`${REF_BOOKMARK_PREFIX}${match[1]}`, p);
+      // 3. 【参考文献索引化】(异步防御性处理)
+      try {
+          // 只扫描可能包含 [1] 的行首段落
+          const refMatches = doc.body.paragraphs.search("^\\[[0-9]+\\]", { matchWildcards: true });
+          refMatches.load("items");
+          await context.sync();
+          for (let i = 0; i < refMatches.items.length; i++) {
+              const p = refMatches.items[i];
+              p.load("text");
+              await context.sync();
+              const m = p.text.match(/^\[(\d+)\]/);
+              if (m) doc.bookmarks.add(`${REF_BOOKMARK_PREFIX}${m[1]}`, p);
           }
-      }
-      await context.sync();
-
-      // 3. 确定目标处理范围
-      let targetRanges = [];
-      if (selection.isEmpty) {
-        const paragraphs = selection.paragraphs;
-        paragraphs.load("items");
-        await context.sync();
-        if (paragraphs.items.length > 0) targetRanges = [paragraphs.items[0]];
-      } else {
-        targetRanges = [selection];
+      } catch (e) {
+          console.warn("Bookmark indexing skip or limited:", e);
       }
 
-      let globalIdx = 0;
-      for (const range of targetRanges) {
+      // 4. 【分段处理选区内容】
+      let globalCounter = 0;
+      for (const range of mainRanges) {
         range.load(["text", "font"]);
         await context.sync();
-        const text = range.text || "";
-        if (!text.trim()) continue;
+        const originalText = range.text || "";
+        if (!originalText.trim()) continue;
 
-        const sessionId = Date.now() + "_" + Math.floor(Math.random() * 100);
+        const session = Date.now() + "_" + Math.floor(Math.random() * 100);
         
-        // 边界锚点
-        const sM = range.getRange("Start").insertContentControl();
-        sM.tag = `${BOU_START}_${sessionId}`;
-        sM.appearance = Word.ContentControlAppearance.hidden;
+        // 分别标记 Start 和 End
+        const startCC = range.getRange("Start").insertContentControl();
+        startCC.tag = `${BOU_START}_${session}`;
+        startCC.appearance = Word.ContentControlAppearance.hidden;
 
-        const eM = range.getRange("End").insertContentControl();
-        eM.tag = `${BOU_END}_${sessionId}`;
-        eM.appearance = Word.ContentControlAppearance.hidden;
+        const endCC = range.getRange("End").insertContentControl();
+        endCC.tag = `${BOU_END}_${session}`;
+        endCC.appearance = Word.ContentControlAppearance.hidden;
 
         // 识别正文引用
-        const matches = range.search("\\[[0-9.,\\- ]@\\]|图 [0-9]@|表 [0-9]@|Fig. [0-9]@|Figure [0-9]@|Table [0-9]@", { matchWildcards: true });
-        matches.load("items");
+        const refMatches = range.search("\\[[0-9.,\\- ]@\\]|图 [0-9]@|表 [0-9]@|Fig. [0-9]@|Figure [0-9]@|Table [0-9]@", { matchWildcards: true });
+        refMatches.load("items");
         await context.sync();
 
-        const refMetadata = [];
-        let aiInput = text;
+        const localMap = [];
+        let aiInputText = originalText;
 
-        for (let i = 0; i < matches.items.length; i++) {
-           const m = matches.items[i];
+        for (let i = 0; i < refMatches.items.length; i++) {
+           const m = refMatches.items[i];
            m.load("text");
            m.track();
            await context.sync();
            
-           const id = globalIdx++;
-           const placeholder = `{{REF_${id}}}`;
+           const uid = globalCounter++;
+           const token = `{{REF_${uid}}}`;
            
+           // 安装盾牌锚点 (零触碰)
            const shield = m.getRange("Start").insertContentControl();
-           shield.tag = `${SHIELD_PREFIX}${id}`;
+           shield.tag = `${SHIELD_PREFIX}${uid}`;
            shield.appearance = Word.ContentControlAppearance.hidden;
            
-           const pos = aiInput.indexOf(m.text);
-           if (pos >= 0) {
-              aiInput = aiInput.substring(0, pos) + placeholder + aiInput.substring(pos + m.text.length);
+           const offset = aiInputText.indexOf(m.text);
+           if (offset >= 0) {
+              aiInputText = aiInputText.substring(0, offset) + token + aiInputText.substring(offset + m.text.length);
            }
-           refMetadata.push({ placeholder, id });
+           localMap.push({ placeholder: token, id: uid });
         }
 
         const font = range.font;
@@ -111,9 +114,9 @@ export async function markSelection() {
         await context.sync();
 
         finalItems.push({ 
-          text: aiInput, 
-          refMap: refMetadata, 
-          boundaryTags: { start: sM.tag, end: eM.tag },
+          text: aiInputText, 
+          refMap: localMap, 
+          boundaryTags: { start: startCC.tag, end: endCC.tag },
           baseFont: { 
             name: font.name, size: font.size, color: font.color,
             bold: font.bold, italic: font.italic, underline: font.underline
@@ -121,15 +124,16 @@ export async function markSelection() {
         });
       }
       await context.sync();
-    } catch (err) {
-      console.error("markSelection error:", err);
-    }
-  });
+    });
+  } catch (err) {
+    console.error("Critical markSelection error:", err);
+    throw err; // 向上抛出以便 executeAndReplace 捕获
+  }
   return finalItems;
 }
 
 /**
- * 后置自愈重链器 (VBA 核心移植)
+ * 后置自愈重链逻辑 (VBA 移植)
  */
 async function autoRelinkRange(range) {
     try {
@@ -142,8 +146,9 @@ async function autoRelinkRange(range) {
             await range.context.sync();
             if (m.hyperlink) continue;
             
-            const num = m.text.match(/\[(\d+)\]/)?.[1];
-            if (num) {
+            const numMatch = m.text.match(/\[(\d+)\]/);
+            if (numMatch) {
+                const num = numMatch[1];
                 const bmName = `${REF_BOOKMARK_PREFIX}${num}`;
                 const bm = range.context.document.bookmarks.getAtOrNullObject(bmName);
                 await range.context.sync();
@@ -154,11 +159,13 @@ async function autoRelinkRange(range) {
                 }
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        console.warn("Relink skip:", e);
+    }
 }
 
 /**
- * 复合回写系统 6.1
+ * 复合回写核心 6.2
  */
 async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags, baseFont) {
   try {
@@ -167,45 +174,44 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags, baseFo
       ccs.load("items");
       await context.sync();
 
-      const start = ccs.items.find(c => c.tag === boundaryTags.start);
-      const end = ccs.items.find(c => c.tag === boundaryTags.end);
-      if (!start || !end) return;
+      const startAnchor = ccs.items.find(c => c.tag === boundaryTags.start);
+      const endAnchor = ccs.items.find(c => c.tag === boundaryTags.end);
+      if (!startAnchor || !endAnchor) return;
 
       const segments = aiResult.trim().split(/({{REF_\d+}})/g);
-      let insertionCursor = start.getRange("After");
+      let insertionPoint = startAnchor.getRange("After");
 
-      // 分步同步填缝 (保活)
+      // 分步同步填缝 (保活核心)
       for (const seg of segments) {
           if (!seg) continue;
           if (seg.startsWith("{{REF_") && seg.endsWith("}}")) {
               const id = seg.match(/\d+/)[0];
               const shield = ccs.items.find(c => c.tag === `${SHIELD_PREFIX}${id}`);
-              if (shield) insertionCursor = shield.getRange("After");
+              if (shield) insertionPoint = shield.getRange("After");
           } else {
               let nextAnchor = null;
               const nextIdx = segments.indexOf(seg) + 1;
-              const nextSeg = segments[nextIdx];
-              if (nextSeg && nextSeg.startsWith("{{REF_")) {
-                  const nId = nextSeg.match(/\d+/)[0];
-                  nextAnchor = ccs.items.find(c => c.tag === `${SHIELD_PREFIX}${nId}`);
-              } else {
-                  nextAnchor = end;
+              if (nextIdx < segments.length) {
+                  const ns = segments[nextIdx];
+                  if (ns.startsWith("{{REF_")) {
+                      const nid = ns.match(/\d+/)[0];
+                      nextAnchor = ccs.items.find(c => c.tag === `${SHIELD_PREFIX}${nid}`);
+                  }
               }
+              if (!nextAnchor) nextAnchor = endAnchor;
 
-              if (nextAnchor) {
-                  const gap = insertionCursor.expandTo(nextAnchor.getRange("Before"));
-                  gap.insertText(seg, Word.InsertLocation.replace);
-                  await context.sync();
-              }
+              const gap = insertionPoint.expandTo(nextAnchor.getRange("Before"));
+              gap.insertText(seg, Word.InsertLocation.replace);
+              await context.sync();
           }
       }
 
-      const r = start.getRange("After").expandTo(end.getRange("Before"));
-      await autoRelinkRange(r);
+      const finalR = startAnchor.getRange("After").expandTo(endAnchor.getRange("Before"));
+      await autoRelinkRange(finalR);
 
       if (baseFont) {
-          if (baseFont.name) r.font.name = baseFont.name;
-          if (typeof baseFont.size === "number" && baseFont.size > 0) r.font.size = baseFont.size;
+          if (baseFont.name) finalR.font.name = baseFont.name;
+          if (typeof baseFont.size === "number" && baseFont.size > 0) finalR.font.size = baseFont.size;
       }
 
       for (const c of ccs.items) {
@@ -221,37 +227,38 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags, baseFo
 }
 
 export async function executeAndReplace(processText, onStatus, signal) {
-  if (onStatus) onStatus("processing", "正在扫描参考文献...", true);
-  const results = await markSelection();
-  if (!results || results.length === 0) throw new Error("请先选择文字内容");
+  if (onStatus) onStatus("processing", "正在锁定选区与处理指纹...", true);
+  try {
+    const results = await markSelection();
+    if (!results || results.length === 0) throw new Error("请先选择文字内容");
 
-  for (let i = 0; i < results.length; i++) {
-    if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
-    const item = results[i];
-    if (onStatus) onStatus("processing", `AI 润色中 (${i + 1}/${results.length})...`, true);
-    
-    try {
+    for (let i = 0; i < results.length; i++) {
+      if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
+      const item = results[i];
+      if (onStatus) onStatus("processing", `AI 深度润色中 (${i + 1}/${results.length})...`, true);
+      
       const aiResult = await processText(item.text);
       if (signal?.aborted) { await clearMarks(); throw new Error("已取消"); }
+      
       if (aiResult && aiResult.trim()) {
-        if (onStatus) onStatus("processing", `同步内容并执行自愈功能 (${i + 1}/${results.length})...`, true);
+        if (onStatus) onStatus("processing", `分步同步与自愈重链 (${i + 1}/${results.length})...`, true);
         await replaceSingleMarkedContent(aiResult, item.refMap, item.boundaryTags, item.baseFont);
       }
-    } catch (err) {
-      await clearMarks();
-      throw err;
     }
+    return { result: "全部完成" };
+  } catch (err) {
+    await clearMarks();
+    throw err;
   }
-  return { result: "全部完成" };
 }
 
 export async function clearMarks() {
   try {
     await Word.run(async (context) => {
-      const allCCs = context.document.contentControls;
-      allCCs.load("items");
+      const ccs = context.document.contentControls;
+      ccs.load("items");
       await context.sync();
-      for (const cc of allCCs.items) {
+      for (const cc of ccs.items) {
           if (cc.tag && (cc.tag.includes(SHIELD_PREFIX) || cc.tag.includes(BOU_START) || cc.tag.includes(BOU_END))) {
               cc.delete(true);
           }
