@@ -1,6 +1,9 @@
 /**
  * 将简单的 Markdown 文本转换为 Word 富文本并插入指定位置
  * 支持：### 标题, **加粗**, 1. 列表, {{REF_N}} 占位符以及换行
+ * 
+ * 修复：不再在内部创建新的 Word.run，而是接收 context 参数
+ * 避免跨 Word.run 传递代理对象的问题
  */
 
 /**
@@ -18,8 +21,8 @@ export async function processMarkdownLine(container, line, refMap = []) {
     insertedRange.font.size = 14;
     insertedRange.spacingBefore = 12;
     return;
-  } 
-  
+  }
+
   if (line.startsWith("##")) {
     const titleText = line.replace(/^##\s*/, "");
     const insertedRange = container.insertParagraph(titleText, "End");
@@ -31,10 +34,10 @@ export async function processMarkdownLine(container, line, refMap = []) {
 
   // 2. 基础段落处理：支持加粗和占位符
   const insertedRange = container.insertParagraph("", "End");
-  
+
   // 采用复合正则切分：同时匹配 **加粗** 和 {{REF_N}}
   const parts = line.split(/(\*\*.*?\*\*|{{REF_\d+}})/g);
-  
+
   for (const part of parts) {
     if (!part) continue;
 
@@ -57,13 +60,14 @@ export async function processMarkdownLine(container, line, refMap = []) {
 
 /**
  * 批量插入 Markdown 文本
+ * 修复：接收 context 参数而非在内部创建新的 Word.run
+ * 如果未传入 context，则创建新的 Word.run（向后兼容）
  */
 export async function insertMarkdownAsRichText(target, markdown, location = "End", refMap = []) {
-  await Word.run(async (context) => {
-    // 兼容处理
+  const doWork = async (context) => {
     const cleanMarkdown = markdown.replace(/\\n/g, "\n");
     const lines = cleanMarkdown.split(/\r?\n/);
-    
+
     if (location === "Replace") {
       target.insertText("", "Replace");
     }
@@ -79,5 +83,15 @@ export async function insertMarkdownAsRichText(target, markdown, location = "End
       await processMarkdownLine(target, line, refMap);
     }
     await context.sync();
-  });
+  };
+
+  // 如果 target 有关联的 context，直接使用它（同一个 Word.run 内）
+  if (target.context) {
+    await doWork(target.context);
+  } else {
+    // 降级：创建新的 Word.run（不推荐，但向后兼容）
+    await Word.run(async (context) => {
+      await doWork(context);
+    });
+  }
 }

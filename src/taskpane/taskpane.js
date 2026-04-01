@@ -14,6 +14,13 @@ import * as termUtils from "../utils/terminology.js";
 import * as numberUtils from "../utils/numbering.js";
 import * as abstractUtils from "../utils/abstract.js";
 
+// ==================== 工具函数 ====================
+function escapeHtml(str) {
+  if (!str) return "";
+  const s = String(str);
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 // ==================== 状态 ====================
 let appInitialized = false;
 let isOfficeReady = false;
@@ -74,28 +81,16 @@ function initTheme() {
     if (btn) btn.textContent = "🌓";
   }
 
-  // 监听系统主题变化（系统一旦变化，强制解除用户的手动锁定恢复自动）
+  // 监听系统主题变化（仅在用户未手动选择主题时跟随系统）
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    localStorage.removeItem("wordai_theme");
-    const tbtn = document.getElementById("theme-toggle-btn");
-    if (tbtn) tbtn.textContent = "🌓";
-    applyAutoTheme();
+    // 仅在用户未手动设置主题时才跟随系统变化
+    const userTheme = localStorage.getItem("wordai_theme");
+    if (!userTheme) {
+      applyAutoTheme();
+    }
   });
 
-  // 监听 Office 主题变化
-  if (isOfficeReady && Office.context?.document?.addHandlerAsync) {
-    try {
-      Office.context.document.addHandlerAsync(
-        Office.EventType.OfficeThemeChanged,
-        () => {
-          localStorage.removeItem("wordai_theme");
-          const tbtn = document.getElementById("theme-toggle-btn");
-          if (tbtn) tbtn.textContent = "🌓";
-          applyAutoTheme();
-        }
-      );
-    } catch (e) {}
-  }
+  // 注意：Office.EventType.OfficeThemeChanged 仅支持 Outlook，Word 不支持，已移除
 }
 
 function applyAutoTheme() {
@@ -177,9 +172,9 @@ function renderActionButtons() {
   grid.innerHTML = prompts
     .map(
       (p) => `
-    <button class="action-btn" data-prompt-id="${p.id}" style="--btn-color: ${p.color}" title="${p.name}">
-      <span class="action-icon">${p.icon}</span>
-      <span class="action-name">${p.name}</span>
+    <button class="action-btn" data-prompt-id="${escapeHtml(p.id)}" style="--btn-color: ${escapeHtml(p.color)}" title="${escapeHtml(p.name)}">
+      <span class="action-icon">${escapeHtml(p.icon)}</span>
+      <span class="action-name">${escapeHtml(p.name)}</span>
     </button>
   `
     )
@@ -235,10 +230,44 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
 
   try {
     const result = await ooxml.executeAndReplace(
-      async (text) => {
-        const redLine = "\n\n【绝对禁令】：文中的 {{REF_N}} 是物理引用锚点，你必须原封不动地保留所有 {{REF_N}}（包括编号），并将其放置在改写后对应的语义位置。严禁删除、修改或合并这些占位符！\n\n";
-        const raw = await llm.callLLM(redLine + systemPrompt + redLine, text, currentAbortController.signal);
-        return llm.cleanAiResponse(raw);
+      async (segments, signal) => {
+        let hasRefs = segments.some(s => s.refMap && s.refMap.length > 0);
+        let redLine = "";
+        if (hasRefs) {
+            redLine += "\n\n【绝对禁令】：文中的 [REF_N] 是物理引用锚点，你必须原封不动地保留所有 [REF_N]（包括里面的 REF、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
+        }
+
+        let fullText = "";
+        if (segments.length > 1) {
+            redLine += "\n【多段落严格指令】：本次待处理的文本被切分成了多个片段，并分别使用 <p id=\"N\"> 标签包裹。你必须逐个对每个片段进行处理，并在处理后的内容外层原封不动地保留对应的 <p id=\"N\"> 和 </p> 标签包围！严禁合并段落！严禁遗漏标签！";
+            fullText = segments.map((s, i) => `<p id="${i}">\n${s.text}\n</p>`).join("\n\n");
+        } else {
+            fullText = segments[0].text;
+        }
+
+        const finalPrompt = redLine ? (systemPrompt + redLine + "\n") : systemPrompt;
+        const raw = await llm.callLLM(finalPrompt, fullText, signal);
+        const cleanRaw = llm.cleanAiResponse(raw);
+
+        if (segments.length === 1) {
+            return [cleanRaw.replace(/<\/?p[^>]*>/g, '').trim()];
+        } else {
+            const aiTexts = [];
+            for (let i = 0; i < segments.length; i++) {
+                // 兼容带不带双引号或者单引号的 XML 属性
+                const regex = new RegExp(`<p\\s+id=["']?${i}["']?\\s*>([\\s\\S]*?)</p>`, 'i');
+                const match = cleanRaw.match(regex);
+                if (match) {
+                    aiTexts.push(match[1].trim());
+                } else {
+                    aiTexts.push("");
+                }
+            }
+            if (aiTexts.some(t => !t)) {
+                throw new Error("大模型未能遵循多段落 XML 标签分割指令，请求作废。请调整文本长度后重试。");
+            }
+            return aiTexts;
+        }
       },
       (type, msg, canCancel) => showInlineStatus(type, msg, canCancel),
       currentAbortController.signal
@@ -512,13 +541,13 @@ function renderPromptList() {
   list.innerHTML = prompts
     .map(
       (p) => `
-    <div class="prompt-item" data-id="${p.id}">
-      <div class="prompt-item-color" style="background: ${p.color}"></div>
-      <span class="prompt-item-icon">${p.icon}</span>
-      <span class="prompt-item-name">${p.name}</span>
+    <div class="prompt-item" data-id="${escapeHtml(p.id)}">
+      <div class="prompt-item-color" style="background: ${escapeHtml(p.color)}"></div>
+      <span class="prompt-item-icon">${escapeHtml(p.icon)}</span>
+      <span class="prompt-item-name">${escapeHtml(p.name)}</span>
       <div class="prompt-item-actions">
-        <button class="btn btn-sm btn-ghost edit-prompt-btn" data-id="${p.id}">✎</button>
-        <button class="btn btn-sm btn-ghost delete-prompt-btn" data-id="${p.id}">✕</button>
+        <button class="btn btn-sm btn-ghost edit-prompt-btn" data-id="${escapeHtml(p.id)}">✎</button>
+        <button class="btn btn-sm btn-ghost delete-prompt-btn" data-id="${escapeHtml(p.id)}">✕</button>
       </div>
     </div>`
     )
@@ -599,7 +628,7 @@ function showToast(message, type = "info") {
     position: "fixed",
     bottom: "12px",
     left: "50%",
-    transform: "translateX(-50%)",
+    transform: "translateX(-50%) translateY(20px)",
     padding: "6px 14px",
     borderRadius: "6px",
     fontSize: "11.5px",
@@ -609,12 +638,18 @@ function showToast(message, type = "info") {
     zIndex: "200",
     boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
     whiteSpace: "nowrap",
-    animation: "slideDown 0.2s ease",
+    opacity: "0",
+    transition: "all 0.25s ease",
   });
   document.body.appendChild(toast);
+  // 触发动画（不再依赖不存在的 slideDown keyframe）
+  requestAnimationFrame(() => {
+    toast.style.opacity = "1";
+    toast.style.transform = "translateX(-50%) translateY(0)";
+  });
   setTimeout(() => {
     toast.style.opacity = "0";
-    toast.style.transition = "opacity 0.3s";
+    toast.style.transform = "translateX(-50%) translateY(20px)";
     setTimeout(() => toast.remove(), 300);
   }, 2500);
 }
@@ -678,24 +713,31 @@ function bindAcademicEvents() {
     try {
       showInlineStatus("processing", "正在扫描占位符与文献列表...");
       
+      // scanPlaceholders 现在返回纯数据
+      const [placeholderData, bibliography] = await Promise.all([
+        refUtils.scanPlaceholders(),
+        refUtils.parseBibliography()
+      ]);
+
+      if (placeholderData.count === 0) {
+        showInlineStatus("done", "未发现占位符");
+        setTimeout(() => hideInlineStatus(), 2000);
+        return;
+      }
+
+      // 重新在 Word.run 内创建 ContentControl 标记
       await Word.run(async (context) => {
-        // 1. 同时扫描占位符和解析列表
-        const [results, bibliography] = await Promise.all([
-          refUtils.scanPlaceholders(),
-          refUtils.parseBibliography()
-        ]);
-
-        if (results.items.length === 0) {
-          showInlineStatus("done", "未发现占位符");
-          setTimeout(() => hideInlineStatus(), 2000);
-          return;
-        }
-
-        // 2. 清理旧标记并为每个占位符包裹 CC 以便追踪
+        // 清理旧标记
         const oldCCs = context.document.contentControls.getByTag("wordai_ref_placeholder");
         oldCCs.load("items");
         await context.sync();
         for (let cc of oldCCs.items) cc.delete(true);
+        await context.sync();
+
+        // 重新搜索并包裹 CC
+        const results = context.document.body.search("【*】", { matchWildcards: true });
+        results.load("items");
+        await context.sync();
 
         for (let i = 0; i < results.items.length; i++) {
           const cc = results.items[i].insertContentControl();
@@ -703,16 +745,16 @@ function bindAcademicEvents() {
           cc.appearance = "Hidden";
         }
         await context.sync();
-        
-        refNavState.itemsCount = results.items.length;
-        refNavState.bibliography = bibliography;
-        refNavState.currentIndex = 0;
-        
-        document.getElementById("ref-navigator").classList.remove("hidden");
-        await updateRefNavigator();
-        showInlineStatus("done", `发现 ${results.items.length} 处引用，文献库 ${bibliography.length} 条 ✓`);
-        setTimeout(() => hideInlineStatus(), 2000);
       });
+
+      refNavState.itemsCount = placeholderData.count;
+      refNavState.bibliography = bibliography;
+      refNavState.currentIndex = 0;
+      
+      document.getElementById("ref-navigator").classList.remove("hidden");
+      await updateRefNavigator();
+      showInlineStatus("done", `发现 ${placeholderData.count} 处引用，文献库 ${bibliography.length} 条 ✓`);
+      setTimeout(() => hideInlineStatus(), 2000);
     } catch (err) {
       showInlineStatus("error", err.message);
       setTimeout(() => hideInlineStatus(), 2000);

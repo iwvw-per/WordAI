@@ -169,17 +169,18 @@ export async function callLLMStream(systemPrompt, userContent, onChunk, signal) 
   };
 
   // 支持 90s 无响应超时
-  let fetchSignal = signal;
   let timeoutId;
   const controller = new AbortController();
 
+  // 监听外部取消，并保存引用以便后续清理
+  let onExternalAbort = null;
   if (signal) {
-    // 监听外部取消
-    signal.addEventListener("abort", () => controller.abort(signal.reason));
+    onExternalAbort = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", onExternalAbort);
   }
   
   timeoutId = setTimeout(() => controller.abort(new Error("请求超时，请检查网络或 API 服务状态")), 90000);
-  fetchSignal = controller.signal;
+  const fetchSignal = controller.signal;
 
   try {
     const response = await fetch(url, {
@@ -241,6 +242,10 @@ export async function callLLMStream(systemPrompt, userContent, onChunk, signal) 
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    // 清理外部 signal 的事件监听器，防止内存泄漏
+    if (signal && onExternalAbort) {
+      signal.removeEventListener("abort", onExternalAbort);
+    }
   }
 }
 
