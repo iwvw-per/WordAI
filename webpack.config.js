@@ -13,7 +13,7 @@ module.exports = async (env, options) => {
     },
     output: {
       path: path.resolve(__dirname, "dist"),
-      filename: "[name].bundle.js",
+      filename: dev ? "[name].bundle.js" : "[name].[contenthash].js",
       clean: true,
     },
     resolve: {

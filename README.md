@@ -2,6 +2,9 @@
 
 ⚡ 在 Word 中使用自定义 LLM API 一键处理文字。
 
+> [!NOTE]
+> 本项目已迁移至组织模式进行维护：[iwvw-per/WordAI](https://github.com/iwvw-per/WordAI)
+
 ## 快速开始（开发）
 
 ```bash
@@ -18,7 +21,7 @@ npm start       # 一键启动（服务器 + Word + 插件加载）
 ```yaml
 services:
   wordai:
-    image: ghcr.io/iwvw/wordai:latest
+    image: iwvw-per/wordai:latest
     ports:
       - "8080:80"
     environment:
@@ -37,43 +40,21 @@ docker compose up -d
 
 ---
 
-## 部署到服务器 (传统方式)
+## 如何强制更新（解决缓存问题）
 
-### 第一步：配置服务器地址
+如果您在服务端更新了代码，但用户端显示的依然是旧版本（如版本号显示的还是 v1.0.0），请尝试以下方案：
 
-编辑 `deploy.config.js`，填入你的服务器地址：
+### 方案 A：自动更新（推荐）
+本项目已启用 **Webpack ContentHash** 技术。每次服务端代码变动都会生成全新的文件名，Word 会在下次打开时自动拉取新版。
 
-```js
-module.exports = {
-  SERVER_URL: "https://your-server.com/wordai",
-};
-```
+### 方案 B：手动清理环境（彻底方案）
+如果自动更新未触发，请让用户运行 `dist/` 目录下的 **`clear-cache.bat`**。
+该脚本会：
+1. 强制关闭 Word 进程。
+2. 删除 Office 浏览器的底层缓存文件夹。
+3. 再次打开 Word 时，插件将 100% 同步服务器最新状态。
 
-### 第二步：构建
-
-```bash
-npm run build:prod
-```
-
-构建完成后 `dist/` 目录包含：
-- `taskpane.html` + `taskpane.bundle.js` + `assets/` → 上传到服务器
-- `manifest.xml` → 已自动替换为服务器地址
-- `install.bat` / `uninstall.bat` → 给用户的安装脚本
-
-### 第三步：部署
-
-将 `dist/` 中的网页文件上传到你的服务器对应路径。
-
-### 第四步：分发
-
-给用户的文件只需要两个：
-```
-manifest.xml    ← 插件清单
-install.bat     ← 双击安装
-uninstall.bat   ← 双击卸载
-```
-
-用户在新电脑上：**双击 install.bat → 重启 Word → 完成**。
+---
 
 ## 功能
 
@@ -82,7 +63,7 @@ uninstall.bat   ← 双击卸载
 - 🤖 **自动获取模型** - 从 API 端点自动拉取模型列表
 - 📝 **自定义提示词** - 添加/编辑/删除提示词模板
 - 🎨 **格式保留** - OOXML 级别操作，保留加粗、斜体等
-- ⏭️ **智能跳过** - 自动跳过标题、表格、公式、交叉引用
+- ⏭️ **智能跳过** - 自动跳过标题、表格、公式、交叉引用、图片、目录
 
 ## 常用命令
 
@@ -91,6 +72,6 @@ uninstall.bat   ← 双击卸载
 | `npm start` | 一键启动开发环境 |
 | `npm stop` | 停止开发环境 |
 | `npm run dev` | 仅启动开发服务器 |
-| `npm run build:prod` | 构建生产版本（含 manifest 替换） |
+| `npm run build:prod` | 构建生产版本（含缓存破坏机制） |
 | `npm run sideload` | 仅注册插件到 Word |
 | `npm run unload` | 仅卸载插件 |
