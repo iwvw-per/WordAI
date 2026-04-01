@@ -101,8 +101,12 @@ export async function markSelection() {
 
         const refMatches = p.search("\\[[0-9\\- ,]@\\]", { matchWildcards: true });
         refMatches.load("items");
-        const eqns = p.equations;
-        eqns.load("items");
+        
+        let eqns = null;
+        if (p.equations) {
+          eqns = p.equations;
+          eqns.load("items");
+        }
 
         searchTasks.push({ paragraph: p, refMatches, eqns, boundaryTags: { start: startCC.tag, end: endCC.tag }, startCC, endCC });
       }
@@ -116,7 +120,7 @@ export async function markSelection() {
             task.itemsToShield.push({ range: m, type: "REF", xml: m.getOoxml() });
           }
         }
-        if (task.eqns.items) {
+        if (task.eqns && task.eqns.items) {
           for (const eq of task.eqns.items) {
             task.itemsToShield.push({ range: eq, type: "EQN", xml: eq.getOoxml() });
           }
