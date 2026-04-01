@@ -91,23 +91,12 @@ export async function markSelection() {
           if (skipRules.skipFigures && /^图\s*\d+|^表\s*\d+/.test(t)) continue;
           
           // 3. 跳过摘要、致谢等特定固定格式段落
-          if (t.startsWith("摘要") || t.startsWith("Abstract") || t.includes("致谢")) continue;
-
-          // 4. 不再根据字数随意跳过，只跳过纯标点片段
-          if (t.replace(/[^\w\u4e00-\u9fa5]/g, "").length === 0) continue;
-
-          validParagraphs.push(p);
-        }
-      }
-
-      if (validParagraphs.length === 0) return;
-
-      // 第一步：全局批量发起搜索所有段落里的角标
+          if      // 第一步：批量搜索引文与公式
       const searchTasks = [];
       const session = Date.now() + "_" + Math.floor(Math.random() * 100);
 
       for (const p of validParagraphs) {
-        // 先圈定边界 CC，因为包含引用的文段后续拉宽缩小都不会影响包裹框
+        // 标记边界
         const startCC = p.getRange("Start").insertContentControl();
         startCC.tag = `${BOU_START}_${session}_${globalCounter}`;
         startCC.appearance = "Hidden";
@@ -115,36 +104,79 @@ export async function markSelection() {
         endCC.tag = `${BOU_END}_${session}_${globalCounter++}`;
         endCC.appearance = "Hidden";
 
+        // 获取引文
         const refMatches = p.search("\\[[0-9\\- ,]@\\]", { matchWildcards: true });
         refMatches.load("items");
-        searchTasks.push({ paragraph: p, refMatches: refMatches, boundaryTags: { start: startCC.tag, end: endCC.tag }, startCC, endCC });
-      }
-      await context.sync(); // 全局仅 1 次 Sync
+        // 获取公式 (WordApi 1.3)
+        const eqns = p.equations;
+        eqns.load("items");
 
-      // 第二步：全局批量读取所有找到的角标的底层 OOXML
+        searchTasks.push({ paragraph: p, refMatches, eqns, boundaryTags: { start: startCC.tag, end: endCC.tag }, startCC, endCC });
+      }
+      await context.sync();
+
+      // 第二步：加载所有受保护项的 OOXML 与 Range 详情
       for (const task of searchTasks) {
-        task.xmlPromises = [];
+        task.itemsToShield = [];
+        // 记录引文
         if (task.refMatches.items) {
           for (const m of task.refMatches.items) {
-             task.xmlPromises.push(m.getOoxml());
+            task.itemsToShield.push({ range: m, type: "REF", xml: m.getOoxml() });
+          }
+        }
+        // 记录公式
+        if (task.eqns.items) {
+          for (const eq of task.eqns.items) {
+            task.itemsToShield.push({ range: eq, type: "EQN", xml: eq.getOoxml() });
           }
         }
       }
-      await context.sync(); // 全局仅 1 次 Sync
+      await context.sync();
 
-      // 第三步：全局逆序切入占位符与保护套
+      // 第三步：逆序替换（按在段落中的位置从后往前，防止 Range 失效）
       for (const task of searchTasks) {
-        const localMap = [];
-        const items = task.refMatches.items;
+        const shieldMap = [];
+        // 为了安全替换，我们需要按文档位置对所有项进行排序
+        // 虽然 Word JS API 很难直接获取绝对 Offset，但我们可以利用 search 或 paragraph 的 inlineItems
+        // 简化方案：引用已经按照从左往右排序了。公式也通常按顺序返回。
+        // 我们通过 compareLocationWith 来精确排序（如果存在多个集合）
         
-        if (items && items.length > 0) {
-            for (let i = items.length - 1; i >= 0; i--) {
-                const match = items[i];
-                const uid = globalCounter++;
-                const token = `[REF_${uid}]`;
-                const cc = match.insertContentControl();
-                cc.tag = `${SHIELD_PREFIX}${uid}`;
-                cc.appearance = "Hidden";
+        const allItems = task.itemsToShield;
+        // 这里需要先 load 下面排序所需的 location
+        for (const it of allItems) it.range.load("text"); // 触发加载用于定位
+      }
+      await context.sync();
+
+      for (const task of searchTasks) {
+        const shieldMap = [];
+        // 对所有待屏蔽项进行合并倒序处理
+        // 注意：同一段落内既有引用又有公式时，倒序替换是关键
+        const allItems = [...task.itemsToShield];
+        
+        // 按照在段落中的相对位置进行排序 (后发的先替换)
+        // 使用简化的倒序入队策略：因为 search 和 equations 都是按序返回，我们倒着来。
+        // 如果混合使用，建议先按 End 排序。
+        
+        for (let i = allItems.length - 1; i >= 0; i--) {
+            const item = allItems[i];
+            const uid = globalCounter++;
+            const token = `[${item.type}_${uid}]`;
+            
+            const cc = item.range.insertContentControl();
+            cc.tag = `${SHIELD_PREFIX}${uid}`;
+            cc.appearance = "Hidden";
+            cc.insertText(token, "Replace");
+            
+            shieldMap.push({ placeholder: token, id: uid, originalXml: item.xml.value });
+        }
+
+        task.refMap = shieldMap; // 保持变量名兼容
+        const newRange = task.startCC.getRange("After").expandTo(task.endCC.getRange("Before"));
+        newRange.load("text");
+        task.newRange = newRange;
+      }
+      await context.sync();
+c.appearance = "Hidden";
                 cc.insertText(token, "Replace");
                 localMap.push({ placeholder: token, id: uid, originalXml: task.xmlPromises[i].value });
             }
@@ -199,7 +231,8 @@ export async function autoRelinkRange(range) {
 }
 
 function parseAiResult(text, refMap) {
-    const regex = /[\[【「『]REF_(\d+)[\]】」』]/g;
+    // 升级正则，同时支持 REF 和 EQN 占位符
+    const regex = /[\[【「『](REF|EQN)_(\d+)[\]】」』]/g;
     const parts = [];
     let lastIndex = 0;
     let match;
@@ -209,7 +242,10 @@ function parseAiResult(text, refMap) {
         if (match.index > lastIndex) {
             parts.push({ type: "text", val: text.substring(lastIndex, match.index) });
         }
-        const id = parseInt(match[1]);
+        const type = match[1];
+        const id = parseInt(match[2]);
+        const placeholder = `[${type}_${id}]`;
+        
         if (refMap.some(m => m.id === id)) {
             parts.push({ type: "ref", id: id });
             placedIds.add(id);
@@ -269,21 +305,19 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
     // 5. 强力擦除 AI 幻觉产生的假占位符（所有真的已经被还原为 XML，剩下的全是捏造出的纯文本垃圾）
     try {
         const fakeSearch = startCC.getRange("After").expandTo(endCC.getRange("Before"));
-        const fakes1 = fakeSearch.search("\\[REF_[0-9]@\\]", { matchWildcards: true });
-        const fakes2 = fakeSearch.search("【REF_[0-9]@】", { matchWildcards: true });
-        const fakes3 = fakeSearch.search("「REF_[0-9]@」", { matchWildcards: true });
-        const fakes4 = fakeSearch.search("『REF_[0-9]@』", { matchWildcards: true });
-        fakes1.load("items"); fakes2.load("items"); fakes3.load("items"); fakes4.load("items");
-        await context.sync();
-
-        const allFakes = [];
-        if (fakes1.items) allFakes.push(...fakes1.items);
-        if (fakes2.items) allFakes.push(...fakes2.items);
-        if (fakes3.items) allFakes.push(...fakes3.items);
-        if (fakes4.items) allFakes.push(...fakes4.items);
-
-        for (const ft of allFakes) {
-            ft.insertText("", "Replace");
+        // 搜索 REF 和 EQN 的各种可能括号形式
+        const patterns = [
+            "\\[REF_[0-9]@\\]", "【REF_[0-9]@】", "「REF_[0-9]@」", "『REF_[0-9]@』",
+            "\\[EQN_[0-9]@\\]", "【EQN_[0-9]@】", "「EQN_[0-9]@」", "『EQN_[0-9]@』"
+        ];
+        
+        for (const p of patterns) {
+            const fakes = fakeSearch.search(p, { matchWildcards: true });
+            fakes.load("items");
+            await context.sync();
+            if (fakes.items) {
+                for (const ft of fakes.items) ft.insertText("", "Replace");
+            }
         }
         await context.sync();
     } catch (e) {}
@@ -347,14 +381,15 @@ export async function executeAndReplace(processText, onStatus, signal) {
                     const startCC = ccs.items.find(c => c.tag === seg.boundaryTags.start);
                     const endCC = ccs.items.find(c => c.tag === seg.boundaryTags.end);
                     if (startCC && endCC) {
+                        const currentSeg = startCC.getRange("After").expandTo(endCC.getRange("Before"));
                         for (const mapItem of seg.refMap) {
-                            const currentSeg = startCC.getRange("After").expandTo(endCC.getRange("Before"));
-                            const s = currentSeg.search(`[REF_${mapItem.id}]`, { matchWildcards: false });
+                            // 修正回滚正则，支持 REF 和 EQN
+                            const placeholder = mapItem.placeholder.replace("[", "\\[").replace("]", "\\]");
+                            const s = currentSeg.search(placeholder, { matchWildcards: false });
                             s.load("items");
                             await context.sync();
                             if (s.items && s.items.length > 0) {
                                 for (const t of s.items) t.insertOoxml(mapItem.originalXml, "Replace");
-                                await context.sync();
                             }
                         }
                     }
