@@ -308,10 +308,12 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
 
 export async function executeAndReplace(processText, onStatus, signal) {
   let segments = null;
-  if (onStatus) onStatus("processing", "正在锁定选区与处理引用...", true);
+  if (onStatus) onStatus("processing", "⚓ 锚定文献中...", true);
   try {
     segments = await markSelection();
     if (!segments || segments.length === 0) throw new Error("未选中内容");
+
+    if (onStatus) onStatus("processing", `📦 提取 ${segments.length} 段...`, true);
 
     // 现在，我们将包含整个选区信息的 segments 一把抛给业务层组合发送，防止 503 限流
     const aiTexts = await processText(segments, signal);
@@ -319,6 +321,8 @@ export async function executeAndReplace(processText, onStatus, signal) {
     if (!aiTexts || aiTexts.length !== segments.length) {
         throw new Error("大模型返回格式错乱：未能按结构处理全部段落。");
     }
+
+    if (onStatus) onStatus("processing", `🧩 重组排版中...`, true);
 
     // 取得结果后，依然走单点的 AST 回填，以确保 Word 排版里夹带的图片/表格被完美留存
     for (let i = 0; i < segments.length; i++) {

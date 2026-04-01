@@ -245,8 +245,14 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
             fullText = segments[0].text;
         }
 
+        showInlineStatus("processing", "🔗 等待云端响应...", true);
+
         const finalPrompt = redLine ? (systemPrompt + redLine + "\n") : systemPrompt;
-        const raw = await llm.callLLM(finalPrompt, fullText, signal);
+        const raw = await llm.callLLMStream(finalPrompt, fullText, (delta, currentText) => {
+            let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
+            if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
+            showInlineStatus("processing", `⚡ ${displaySnippet}█`, true);
+        }, signal);
         const cleanRaw = llm.cleanAiResponse(raw);
 
         if (segments.length === 1) {
@@ -274,14 +280,14 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     );
 
     showInlineStatus("done", `${actionName}完成 ✓`);
-    setTimeout(() => hideInlineStatus(), 2000);
+    setTimeout(() => hideInlineStatus(), 10000); // 延长至 10 秒供用户查看结果
   } catch (err) {
     if (err.name === "AbortError" || err.message === "已取消") {
       showInlineStatus("error", "用户已中止");
     } else {
       showInlineStatus("error", err.message);
     }
-    setTimeout(() => hideInlineStatus(), 3000);
+    setTimeout(() => hideInlineStatus(), 10000); // 错误日志同样延长停留
     // 确保清理
     await ooxml.clearMarks();
   } finally {
@@ -784,18 +790,23 @@ function bindAcademicEvents() {
       resultsDiv.classList.remove("hidden");
       resultsDiv.innerHTML = '<div class="compact-list-item">扫描并识别术语中...</div>';
 
+      let extractedText = "";
+      
       await Word.run(async (context) => {
         const body = context.document.body;
         body.load("text");
         await context.sync();
-        const text = body.text.substring(0, 15000); // 截取核心内容
-        const conflicts = await termUtils.extractTerminology(text);
-        
-        if (!conflicts || conflicts.length === 0) {
-          resultsDiv.innerHTML = '<div class="compact-list-item">未发现明显术_语冲突 ✨</div>';
-          setTimeout(() => resultsDiv.classList.add("hidden"), 3000);
-          return;
-        }
+        extractedText = body.text.substring(0, 15000); // 截取核心内容
+      });
+      
+      // 【关键修复】：将耗时巨大的大模型网络请求彻底剥离出随时可能 Timeout 的 Word.run 隔离区
+      const conflicts = await termUtils.extractTerminology(extractedText);
+      
+      if (!conflicts || conflicts.length === 0) {
+        resultsDiv.innerHTML = '<div class="compact-list-item">未发现明显术_语冲突 ✨</div>';
+        setTimeout(() => resultsDiv.classList.add("hidden"), 3000);
+        return;
+      }
 
         resultsDiv.innerHTML = conflicts.map((c, i) => `
           <div class="compact-list-item term-conflict-item">
@@ -826,7 +837,6 @@ function bindAcademicEvents() {
               }
            });
         });
-      });
     } catch (err) {
       showToast(err.message, "error");
       document.getElementById("term-check-results").classList.add("hidden");
@@ -838,7 +848,7 @@ function bindAcademicEvents() {
       showInlineStatus("processing", "正在重排图表编号...");
       const result = await numberUtils.renumberFiguresAndTables();
       showToast(result.message, "success");
-      hideInlineStatus();
+      setTimeout(() => hideInlineStatus(), 10000);
     } catch (err) {
       showInlineStatus("error", err.message);
       setTimeout(() => hideInlineStatus(), 3000);
@@ -862,7 +872,7 @@ function bindAcademicEvents() {
       });
       
       showToast("摘要已生成并插入文首", "success");
-      hideInlineStatus();
+      setTimeout(() => hideInlineStatus(), 10000);
     } catch (err) {
       showInlineStatus("error", err.message);
       setTimeout(() => hideInlineStatus(), 3000);

@@ -22,18 +22,22 @@ export async function renumberFiguresAndTables(passedContext = null) {
         for (const p of paragraphs.items) {
             const text = p.text.trim();
             if (text.length > 0 && text.length < 150) {
-                if (/^图\s*[0-9]+/.test(text)) {
+                const figMatch = text.match(/^图\s*[0-9]+/);
+                if (figMatch) {
                     figCount++;
-                    const search = p.search("图[ ][0-9]@", { matchWildcards: true });
+                    const search = p.search(figMatch[0], { matchWildcards: false });
                     search.load("items");
                     await context.sync();
                     if (search.items.length > 0) search.items[0].insertText(`图 ${figCount}`, "Replace");
-                } else if (/^表\s*[0-9]+/.test(text)) {
-                    tabCount++;
-                    const search = p.search("表[ ][0-9]@", { matchWildcards: true });
-                    search.load("items");
-                    await context.sync();
-                    if (search.items.length > 0) search.items[0].insertText(`表 ${tabCount}`, "Replace");
+                } else {
+                    const tabMatch = text.match(/^表\s*[0-9]+/);
+                    if (tabMatch) {
+                        tabCount++;
+                        const search = p.search(tabMatch[0], { matchWildcards: false });
+                        search.load("items");
+                        await context.sync();
+                        if (search.items.length > 0) search.items[0].insertText(`表 ${tabCount}`, "Replace");
+                    }
                 }
             }
         }
