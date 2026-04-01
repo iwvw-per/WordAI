@@ -21,7 +21,7 @@ npm start       # 一键启动（服务器 + Word + 插件加载）
 ```yaml
 services:
   wordai:
-    image: iwvw-per/wordai:latest
+    image: iwvw/wordai:latest
     ports:
       - "8080:80"
     environment:
@@ -45,11 +45,14 @@ docker compose up -d
 如果您在服务端更新了代码，但用户端显示的依然是旧版本（如版本号显示的还是 v1.0.0），请尝试以下方案：
 
 ### 方案 A：自动更新（推荐）
+
 本项目已启用 **Webpack ContentHash** 技术。每次服务端代码变动都会生成全新的文件名，Word 会在下次打开时自动拉取新版。
 
 ### 方案 B：手动清理环境（彻底方案）
+
 如果自动更新未触发，请让用户运行 `dist/` 目录下的 **`clear-cache.bat`**。
 该脚本会：
+
 1. 强制关闭 Word 进程。
 2. 删除 Office 浏览器的底层缓存文件夹。
 3. 再次打开 Word 时，插件将 100% 同步服务器最新状态。
@@ -67,11 +70,11 @@ docker compose up -d
 
 ## 常用命令
 
-| 命令 | 说明 |
-|------|------|
-| `npm start` | 一键启动开发环境 |
-| `npm stop` | 停止开发环境 |
-| `npm run dev` | 仅启动开发服务器 |
+| 命令                 | 说明                           |
+| -------------------- | ------------------------------ |
+| `npm start`          | 一键启动开发环境               |
+| `npm stop`           | 停止开发环境                   |
+| `npm run dev`        | 仅启动开发服务器               |
 | `npm run build:prod` | 构建生产版本（含缓存破坏机制） |
-| `npm run sideload` | 仅注册插件到 Word |
-| `npm run unload` | 仅卸载插件 |
+| `npm run sideload`   | 仅注册插件到 Word              |
+| `npm run unload`     | 仅卸载插件                     |
