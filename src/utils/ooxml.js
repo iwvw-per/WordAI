@@ -33,9 +33,7 @@ export async function markSelection() {
         const pars = doc.body.paragraphs;
         pars.load("items");
         await context.sync();
-        for (const p of pars.items) {
-          p.load("text");
-        }
+        for (const p of pars.items) p.load("text");
         await context.sync();
         for (const p of pars.items) {
           const m = p.text.match(/^\[(\d+)\]/);
@@ -54,7 +52,6 @@ export async function markSelection() {
       }
 
       // 2. 读取用户配置的跳过规则
-      // 默认开启跳过特性，如果 localStorage 中没有则用默认值
       const skipRulesStr = localStorage.getItem("wordai_skip_rules");
       const skipRules = skipRulesStr ? JSON.parse(skipRulesStr) : {
         skipHeadings: true,
@@ -62,10 +59,8 @@ export async function markSelection() {
         skipQuotes: true,
       };
 
-      // 3. 细化处理选区，支持跳过标题等特殊格式
+      // 3. 提取合法段落
       let globalCounter = 0;
-      
-      // 提取选区内所有的段落，进行细粒度控制
       const validParagraphs = [];
       for (const range of mainRanges) {
         const ps = range.paragraphs;
@@ -81,22 +76,22 @@ export async function markSelection() {
           const t = p.text.trim();
           if (!t) continue;
           
-          // ==== 核心跳过逻辑 ====
-          
-          // 1. 跳过各级标题 (按样式名称判断，包括中英文环境)
           if (skipRules.skipHeadings && (p.style.includes("Heading") || p.style.includes("标题"))) continue;
-          
-          // 2. 跳过图表标题
-          // 以“图 X”或“表 X”开头
           if (skipRules.skipFigures && /^图\s*\d+|^表\s*\d+/.test(t)) continue;
-          
-          // 3. 跳过摘要、致谢等特定固定格式段落
-          if      // 第一步：批量搜索引文与公式
+          if (t.startsWith("摘要") || t.startsWith("Abstract") || t.includes("致谢")) continue;
+          if (t.replace(/[^\w\u4e00-\u9fa5]/g, "").length === 0) continue;
+
+          validParagraphs.push(p);
+        }
+      }
+
+      if (validParagraphs.length === 0) return;
+
+      // 第一步：批量搜索引文与公式
       const searchTasks = [];
       const session = Date.now() + "_" + Math.floor(Math.random() * 100);
 
       for (const p of validParagraphs) {
-        // 标记边界
         const startCC = p.getRange("Start").insertContentControl();
         startCC.tag = `${BOU_START}_${session}_${globalCounter}`;
         startCC.appearance = "Hidden";
@@ -104,10 +99,8 @@ export async function markSelection() {
         endCC.tag = `${BOU_END}_${session}_${globalCounter++}`;
         endCC.appearance = "Hidden";
 
-        // 获取引文
         const refMatches = p.search("\\[[0-9\\- ,]@\\]", { matchWildcards: true });
         refMatches.load("items");
-        // 获取公式 (WordApi 1.3)
         const eqns = p.equations;
         eqns.load("items");
 
@@ -115,16 +108,14 @@ export async function markSelection() {
       }
       await context.sync();
 
-      // 第二步：加载所有受保护项的 OOXML 与 Range 详情
+      // 第二步：批量加载 OOXML
       for (const task of searchTasks) {
         task.itemsToShield = [];
-        // 记录引文
         if (task.refMatches.items) {
           for (const m of task.refMatches.items) {
             task.itemsToShield.push({ range: m, type: "REF", xml: m.getOoxml() });
           }
         }
-        // 记录公式
         if (task.eqns.items) {
           for (const eq of task.eqns.items) {
             task.itemsToShield.push({ range: eq, type: "EQN", xml: eq.getOoxml() });
@@ -133,29 +124,10 @@ export async function markSelection() {
       }
       await context.sync();
 
-      // 第三步：逆序替换（按在段落中的位置从后往前，防止 Range 失效）
+      // 第三步：逆序替换
       for (const task of searchTasks) {
         const shieldMap = [];
-        // 为了安全替换，我们需要按文档位置对所有项进行排序
-        // 虽然 Word JS API 很难直接获取绝对 Offset，但我们可以利用 search 或 paragraph 的 inlineItems
-        // 简化方案：引用已经按照从左往右排序了。公式也通常按顺序返回。
-        // 我们通过 compareLocationWith 来精确排序（如果存在多个集合）
-        
-        const allItems = task.itemsToShield;
-        // 这里需要先 load 下面排序所需的 location
-        for (const it of allItems) it.range.load("text"); // 触发加载用于定位
-      }
-      await context.sync();
-
-      for (const task of searchTasks) {
-        const shieldMap = [];
-        // 对所有待屏蔽项进行合并倒序处理
-        // 注意：同一段落内既有引用又有公式时，倒序替换是关键
         const allItems = [...task.itemsToShield];
-        
-        // 按照在段落中的相对位置进行排序 (后发的先替换)
-        // 使用简化的倒序入队策略：因为 search 和 equations 都是按序返回，我们倒着来。
-        // 如果混合使用，建议先按 End 排序。
         
         for (let i = allItems.length - 1; i >= 0; i--) {
             const item = allItems[i];
@@ -170,32 +142,18 @@ export async function markSelection() {
             shieldMap.push({ placeholder: token, id: uid, originalXml: item.xml.value });
         }
 
-        task.refMap = shieldMap; // 保持变量名兼容
+        task.shieldMap = shieldMap;
         const newRange = task.startCC.getRange("After").expandTo(task.endCC.getRange("Before"));
         newRange.load("text");
         task.newRange = newRange;
       }
       await context.sync();
-c.appearance = "Hidden";
-                cc.insertText(token, "Replace");
-                localMap.push({ placeholder: token, id: uid, originalXml: task.xmlPromises[i].value });
-            }
-        }
 
-        task.refMap = localMap;
-        
-        // 获取插入占位符后，当前段实质承载了 [REF_N] 的新内容（准备一次性 load）
-        const newRange = task.startCC.getRange("After").expandTo(task.endCC.getRange("Before"));
-        newRange.load("text");
-        task.newRange = newRange;
-      }
-      await context.sync(); // 全局仅 1 次 Sync 写入所有段落变化并提取 Range
-
-      // 第四步：从载入完毕的 Range 中剥离所需的纯文本赋给 LLM 处理流
+      // 第四步：提取结果
       for (const task of searchTasks) {
         finalItems.push({
           text: task.newRange.text,
-          refMap: task.refMap,
+          refMap: task.shieldMap,
           boundaryTags: task.boundaryTags
         });
       }
