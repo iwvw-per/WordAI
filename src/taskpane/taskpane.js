@@ -110,7 +110,7 @@ function applyAutoTheme() {
         }
       }
     }
-  } catch {}
+  } catch { }
 
   // 降级为系统设置
   const isSysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -124,7 +124,7 @@ function setTheme(theme) {
 function toggleTheme() {
   const btn = document.getElementById("theme-toggle-btn");
   let current = localStorage.getItem("wordai_theme");
-  
+
   if (!current) {
     // 当前是自动模式，切换到确定的浅色或深色
     const isDark = document.documentElement.getAttribute("data-theme") === "dark";
@@ -234,45 +234,45 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
         let hasRefs = segments.some(s => s.refMap && s.refMap.length > 0);
         let redLine = "";
         if (hasRefs) {
-            redLine += "\n\n【绝对禁令】：文中的 [REF_N] 是物理引用锚点，你必须原封不动地保留所有 [REF_N]（包括里面的 REF、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
+          redLine += "\n\n【绝对禁令】：文中的 [REF_N] 是物理引用锚点，你必须原封不动地保留所有 [REF_N]（包括里面的 REF、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
         }
 
         let fullText = "";
         if (segments.length > 1) {
-            redLine += "\n【多段落严格指令】：本次待处理的文本被切分成了多个片段，并分别使用 <p id=\"N\"> 标签包裹。你必须逐个对每个片段进行处理，并在处理后的内容外层原封不动地保留对应的 <p id=\"N\"> 和 </p> 标签包围！严禁合并段落！严禁遗漏标签！";
-            fullText = segments.map((s, i) => `<p id="${i}">\n${s.text}\n</p>`).join("\n\n");
+          redLine += "\n【多段落严格指令】：本次待处理的文本被切分成了多个片段，并分别使用 <p id=\"N\"> 标签包裹。你必须逐个对每个片段进行处理，并在处理后的内容外层原封不动地保留对应的 <p id=\"N\"> 和 </p> 标签包围！严禁合并段落！严禁遗漏标签！";
+          fullText = segments.map((s, i) => `<p id="${i}">\n${s.text}\n</p>`).join("\n\n");
         } else {
-            fullText = segments[0].text;
+          fullText = segments[0].text;
         }
 
         showInlineStatus("processing", "🔗 等待云端响应...", true);
 
         const finalPrompt = redLine ? (systemPrompt + redLine + "\n") : systemPrompt;
         const raw = await llm.callLLMStream(finalPrompt, fullText, (delta, currentText) => {
-            let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
-            if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
-            showInlineStatus("processing", `⚡ ${displaySnippet}█`, true);
+          let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
+          if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
+          showInlineStatus("processing", `⚡ ${displaySnippet}█`, true);
         }, signal);
         const cleanRaw = llm.cleanAiResponse(raw);
 
         if (segments.length === 1) {
-            return [cleanRaw.replace(/<\/?p[^>]*>/g, '').trim()];
+          return [cleanRaw.replace(/<\/?p[^>]*>/g, '').trim()];
         } else {
-            const aiTexts = [];
-            for (let i = 0; i < segments.length; i++) {
-                // 兼容带不带双引号或者单引号的 XML 属性
-                const regex = new RegExp(`<p\\s+id=["']?${i}["']?\\s*>([\\s\\S]*?)</p>`, 'i');
-                const match = cleanRaw.match(regex);
-                if (match) {
-                    aiTexts.push(match[1].trim());
-                } else {
-                    aiTexts.push("");
-                }
+          const aiTexts = [];
+          for (let i = 0; i < segments.length; i++) {
+            // 兼容带不带双引号或者单引号的 XML 属性
+            const regex = new RegExp(`<p\\s+id=["']?${i}["']?\\s*>([\\s\\S]*?)</p>`, 'i');
+            const match = cleanRaw.match(regex);
+            if (match) {
+              aiTexts.push(match[1].trim());
+            } else {
+              aiTexts.push("");
             }
-            if (aiTexts.some(t => !t)) {
-                throw new Error("大模型未能遵循多段落 XML 标签分割指令，请求作废。请调整文本长度后重试。");
-            }
-            return aiTexts;
+          }
+          if (aiTexts.some(t => !t)) {
+            throw new Error("大模型未能遵循多段落 XML 标签分割指令，请求作废。请调整文本长度后重试。");
+          }
+          return aiTexts;
         }
       },
       (type, msg, canCancel) => showInlineStatus(type, msg, canCancel),
@@ -280,7 +280,6 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     );
 
     showInlineStatus("done", `${actionName}完成 ✓`);
-    setTimeout(() => hideInlineStatus(), 10000); // 延长至 10 秒供用户查看结果
   } catch (err) {
     if (err.name === "AbortError" || err.message === "已取消") {
       showInlineStatus("error", "用户已中止");
@@ -333,11 +332,11 @@ function showInlineStatus(type, message, canCancel = false) {
       html += `<button class="btn btn-sm btn-ghost" id="inline-cancel-btn" style="padding: 2px 6px; font-size: 10px;">中断</button>`;
     }
   } else if (type === "done") {
-    html = `<span class="inline-icon done">✓</span><span>${message}</span>`;
+    html = `<span class="inline-icon done">✓</span><span style="flex:1">${message}</span><button class="btn btn-sm btn-ghost" id="inline-dismiss-btn" style="padding: 2px 6px; font-size: 10px; opacity: 0.7;" title="关闭">✕</button>`;
   } else if (type === "error") {
     html = `<span class="inline-icon error">✕</span><span>${message}</span>`;
   }
-  
+
   bar.innerHTML = html;
 
   // 绑定取消事件
@@ -348,6 +347,12 @@ function showInlineStatus(type, message, canCancel = false) {
         currentAbortController.abort(new Error("已取消"));
       }
     });
+  }
+
+  // 绑定完成状态的关闭按钮
+  const dismissBtn = document.getElementById("inline-dismiss-btn");
+  if (dismissBtn) {
+    dismissBtn.addEventListener("click", () => hideInlineStatus());
   }
 }
 
@@ -409,6 +414,15 @@ function bindSettingsEvents() {
     storage.setTemperature(v);
   });
   document.getElementById("fetch-models-btn").addEventListener("click", fetchModelList);
+  // 点击下拉框时自动刷新模型列表（30 秒防抖）
+  let lastModelFetchTime = 0;
+  document.getElementById("model-select").addEventListener("focus", () => {
+    const now = Date.now();
+    if (now - lastModelFetchTime > 30000 && storage.getEndpoint() && storage.getApiKey()) {
+      lastModelFetchTime = now;
+      fetchModelList();
+    }
+  });
   document.getElementById("model-select").addEventListener("change", (e) => {
     storage.setModel(e.target.value);
     checkConfig();
@@ -673,7 +687,7 @@ function bindAcademicEvents() {
         await context.sync();
 
         if (tables.items.length === 0) throw new Error("请先选中包含表格的区域");
-        
+
         const config = {
           topWidth: parseFloat(document.getElementById("input-line-bold").value) || 1.5,
           bottomWidth: parseFloat(document.getElementById("input-line-bold").value) || 1.5,
@@ -687,8 +701,8 @@ function bindAcademicEvents() {
       });
     } catch (err) {
       showInlineStatus("error", err.message);
+      setTimeout(() => hideInlineStatus(), 5000);
     }
-    setTimeout(() => hideInlineStatus(), 2000);
   });
 
   document.getElementById("btn-scan-tables")?.addEventListener("click", async () => {
@@ -698,7 +712,7 @@ function bindAcademicEvents() {
       if (resultsDiv.classList.contains("hidden")) return;
 
       resultsDiv.innerHTML = '<div class="compact-list-item">扫描中...</div>';
-      
+
       const tables = await tableUtils.getAllTablesInfo();
       if (tables.length === 0) {
         resultsDiv.innerHTML = '<div class="compact-list-item">未发现表格</div>';
@@ -718,7 +732,7 @@ function bindAcademicEvents() {
   document.getElementById("btn-match-refs")?.addEventListener("click", async () => {
     try {
       showInlineStatus("processing", "正在扫描占位符与文献列表...");
-      
+
       // scanPlaceholders 现在返回纯数据
       const [placeholderData, bibliography] = await Promise.all([
         refUtils.scanPlaceholders(),
@@ -756,14 +770,13 @@ function bindAcademicEvents() {
       refNavState.itemsCount = placeholderData.count;
       refNavState.bibliography = bibliography;
       refNavState.currentIndex = 0;
-      
+
       document.getElementById("ref-navigator").classList.remove("hidden");
       await updateRefNavigator();
       showInlineStatus("done", `发现 ${placeholderData.count} 处引用，文献库 ${bibliography.length} 条 ✓`);
-      setTimeout(() => hideInlineStatus(), 2000);
     } catch (err) {
       showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 2000);
+      setTimeout(() => hideInlineStatus(), 5000);
     }
   });
 
@@ -783,6 +796,38 @@ function bindAcademicEvents() {
 
   document.getElementById("btn-ref-confirm")?.addEventListener("click", handleRefConfirm);
 
+  // 一键刷新编号与链接
+  document.getElementById("btn-refresh-refs")?.addEventListener("click", async () => {
+    try {
+      showInlineStatus("processing", "正在刷新引用编号与链接...");
+      await Word.run(async (context) => {
+        const body = context.document.body;
+        // 搜索所有 [N] 格式的引用
+        const matches = body.search("\\[[0-9\\- ,]@\\]", { matchWildcards: true });
+        matches.load("items");
+        await context.sync();
+        for (const m of matches.items) m.load("text");
+        await context.sync();
+
+        let linkedCount = 0;
+        for (const m of matches.items) {
+          const numMatch = m.text.match(/\d+/);
+          if (numMatch) {
+            m.hyperlink = `#wordai_ref_${numMatch[0]}`;
+            m.font.color = "black";
+            m.font.underline = "None";
+            linkedCount++;
+          }
+        }
+        await context.sync();
+        showInlineStatus("done", `已刷新 ${linkedCount} 处引用链接 ✓`);
+      });
+    } catch (err) {
+      showInlineStatus("error", err.message);
+      setTimeout(() => hideInlineStatus(), 5000);
+    }
+  });
+
   // --- 写作辅助 ---
   document.getElementById("btn-term-check")?.addEventListener("click", async () => {
     try {
@@ -791,24 +836,24 @@ function bindAcademicEvents() {
       resultsDiv.innerHTML = '<div class="compact-list-item">扫描并识别术语中...</div>';
 
       let extractedText = "";
-      
+
       await Word.run(async (context) => {
         const body = context.document.body;
         body.load("text");
         await context.sync();
         extractedText = body.text.substring(0, 15000); // 截取核心内容
       });
-      
+
       // 【关键修复】：将耗时巨大的大模型网络请求彻底剥离出随时可能 Timeout 的 Word.run 隔离区
       const conflicts = await termUtils.extractTerminology(extractedText);
-      
+
       if (!conflicts || conflicts.length === 0) {
         resultsDiv.innerHTML = '<div class="compact-list-item">未发现明显术_语冲突 ✨</div>';
         setTimeout(() => resultsDiv.classList.add("hidden"), 3000);
         return;
       }
 
-        resultsDiv.innerHTML = conflicts.map((c, i) => `
+      resultsDiv.innerHTML = conflicts.map((c, i) => `
           <div class="compact-list-item term-conflict-item">
             <div style="flex:1">
               <span class="badge" style="background:var(--primary-light)">${c.standard}</span>
@@ -818,25 +863,25 @@ function bindAcademicEvents() {
           </div>
         `).join("");
 
-        // 绑定统一事件
-        resultsDiv.querySelectorAll(".unify-term-btn").forEach(btn => {
-           btn.addEventListener("click", async () => {
-              const standard = btn.dataset.standard;
-              const aliases = JSON.parse(btn.dataset.aliases);
-              btn.disabled = true;
-              btn.textContent = "⏳";
-              try {
-                await termUtils.replaceTerminology(aliases, standard);
-                showToast(`全文 ${standard} 已统一 ✓`, "success");
-                btn.closest(".term-conflict-item").style.opacity = "0.5";
-                btn.textContent = "已统一";
-              } catch (err) {
-                showToast(err.message, "error");
-                btn.disabled = false;
-                btn.textContent = "统一";
-              }
-           });
+      // 绑定统一事件
+      resultsDiv.querySelectorAll(".unify-term-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const standard = btn.dataset.standard;
+          const aliases = JSON.parse(btn.dataset.aliases);
+          btn.disabled = true;
+          btn.textContent = "⏳";
+          try {
+            await termUtils.replaceTerminology(aliases, standard);
+            showToast(`全文 ${standard} 已统一 ✓`, "success");
+            btn.closest(".term-conflict-item").style.opacity = "0.5";
+            btn.textContent = "已统一";
+          } catch (err) {
+            showToast(err.message, "error");
+            btn.disabled = false;
+            btn.textContent = "统一";
+          }
         });
+      });
     } catch (err) {
       showToast(err.message, "error");
       document.getElementById("term-check-results").classList.add("hidden");
@@ -848,7 +893,7 @@ function bindAcademicEvents() {
       showInlineStatus("processing", "正在重排图表编号...");
       const result = await numberUtils.renumberFiguresAndTables();
       showToast(result.message, "success");
-      setTimeout(() => hideInlineStatus(), 10000);
+      hideInlineStatus();
     } catch (err) {
       showInlineStatus("error", err.message);
       setTimeout(() => hideInlineStatus(), 3000);
@@ -859,7 +904,7 @@ function bindAcademicEvents() {
     try {
       showInlineStatus("processing", "正在提炼全文生成摘要...");
       const abstract = await abstractUtils.generateAbstract();
-      
+
       // 将摘要插入到文档开头，使用富文本渲染
       await Word.run(async (context) => {
         const body = context.document.body;
@@ -867,12 +912,12 @@ function bindAcademicEvents() {
         headerRange.font.bold = true;
         headerRange.font.size = 14;
         await context.sync();
-        
+
         await format.insertMarkdownAsRichText(headerRange, abstract, "After");
       });
-      
+
       showToast("摘要已生成并插入文首", "success");
-      setTimeout(() => hideInlineStatus(), 10000);
+      hideInlineStatus();
     } catch (err) {
       showInlineStatus("error", err.message);
       setTimeout(() => hideInlineStatus(), 3000);
@@ -883,7 +928,7 @@ function bindAcademicEvents() {
 async function updateRefNavigator() {
   const status = document.getElementById("ref-nav-status");
   const target = document.getElementById("ref-nav-target");
-  
+
   await Word.run(async (context) => {
     const ccs = context.document.contentControls.getByTag("wordai_ref_placeholder");
     ccs.load("items");
@@ -904,7 +949,7 @@ async function updateRefNavigator() {
     refNavState.suggestions = suggestions;
 
     status.textContent = `第 ${refNavState.currentIndex + 1}/${ccs.items.length} 处: ${text}`;
-    
+
     if (suggestions.length > 0) {
       target.value = `建议匹配: [${suggestions[0].id}] ${suggestions[0].text.substring(0, 50)}...`;
       target.style.color = "var(--primary)";

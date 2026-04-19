@@ -52,12 +52,7 @@ export async function markSelection() {
       }
 
       // 2. 读取用户配置的跳过规则
-      const skipRulesStr = localStorage.getItem("wordai_skip_rules");
-      const skipRules = skipRulesStr ? JSON.parse(skipRulesStr) : {
-        skipHeadings: true,
-        skipFigures: true,
-        skipQuotes: true,
-      };
+      const skipRules = storage.getSkipRules();
 
       // 3. 提取合法段落
       let globalCounter = 0;
@@ -69,16 +64,65 @@ export async function markSelection() {
         
         for (const p of ps.items) {
           p.load(["text", "style"]);
+          // 加载 inlinePictures 用于图片检测
+          if (skipRules.images) {
+            p.inlinePictures.load("items");
+          }
         }
         await context.sync();
+
+        // 对需要检测表格的段落，批量加载 parentTableOrNullObject
+        if (skipRules.tables) {
+          for (const p of ps.items) {
+            p.parentTableOrNullObject.load("isNullObject");
+          }
+          await context.sync();
+        }
+
+        // 对需要检测公式的段落，批量获取 OOXML 做 oMath 检测
+        let paraOoxmlMap = new Map();
+        if (skipRules.formulas) {
+          const ooxmlPromises = [];
+          for (const p of ps.items) {
+            const t = p.text.trim();
+            if (!t) continue;
+            const ooxmlObj = p.getOoxml();
+            ooxmlPromises.push({ paragraph: p, ooxmlObj });
+          }
+          await context.sync();
+          for (const { paragraph, ooxmlObj } of ooxmlPromises) {
+            paraOoxmlMap.set(paragraph, ooxmlObj.value);
+          }
+        }
         
         for (const p of ps.items) {
           const t = p.text.trim();
           if (!t) continue;
           
-          if (skipRules.skipHeadings && (p.style.includes("Heading") || p.style.includes("标题"))) continue;
-          if (skipRules.skipFigures && /^图\s*\d+|^表\s*\d+/.test(t)) continue;
+          // 跳过标题
+          if (skipRules.headings && (p.style.includes("Heading") || p.style.includes("标题"))) continue;
+          
+          // 跳过表格内的段落
+          if (skipRules.tables && !p.parentTableOrNullObject.isNullObject) continue;
+          
+          // 跳过包含公式（行内/单行）的段落
+          if (skipRules.formulas) {
+            const xml = paraOoxmlMap.get(p);
+            if (xml && (xml.includes("<m:oMath") || xml.includes("<m:oMathPara"))) continue;
+          }
+          
+          // 跳过交叉引用（图表标题段落）
+          if (skipRules.crossReferences && /^(图|表|Figure|Table)\s*\d+/.test(t)) continue;
+          
+          // 跳过图片段落
+          if (skipRules.images && p.inlinePictures.items.length > 0) continue;
+          
+          // 跳过目录段落
+          if (skipRules.toc && (p.style.includes("TOC") || p.style.includes("目录"))) continue;
+          
+          // 跳过摘要/致谢标题
           if (t.startsWith("摘要") || t.startsWith("Abstract") || t.includes("致谢")) continue;
+          // 跳过纯符号段落
           if (t.replace(/[^\w\u4e00-\u9fa5]/g, "").length === 0) continue;
 
           validParagraphs.push(p);

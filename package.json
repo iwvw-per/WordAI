@@ -24,6 +24,7 @@
     "webpack-dev-server": "^5.2.0"
   },
   "dependencies": {
+    "esrecurse": "^4.3.0",
     "office-addin-dev-certs": "^1.13.2"
   }
 }
