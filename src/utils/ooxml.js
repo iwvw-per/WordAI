@@ -38,14 +38,18 @@ export async function markSelection() {
         for (const p of pars.items) {
           const m = p.text.match(/^\[(\d+)\]/);
           if (m) {
-            try { 
-              const searchResults = p.search(`\\[${m[1]}\\]`, { matchWildcards: true });
+            try {
+              const searchResults = p.search(`\\[${m[1]}\\]`, {
+                matchWildcards: true,
+              });
               searchResults.load("items");
               await context.sync();
               if (searchResults.items.length > 0) {
-                 p.getRange("Start").expandTo(searchResults.items[0]).insertBookmark(`${REF_BOOKMARK_PREFIX}${m[1]}`); 
+                p.getRange("Start")
+                  .expandTo(searchResults.items[0])
+                  .insertBookmark(`${REF_BOOKMARK_PREFIX}${m[1]}`);
               }
-            } catch(e){}
+            } catch (e) {}
           }
         }
         await context.sync();
@@ -61,7 +65,7 @@ export async function markSelection() {
         const ps = range.paragraphs;
         ps.load("items");
         await context.sync();
-        
+
         for (const p of ps.items) {
           p.load(["text", "style"]);
           // 加载 inlinePictures 用于图片检测
@@ -94,34 +98,56 @@ export async function markSelection() {
             paraOoxmlMap.set(paragraph, ooxmlObj.value);
           }
         }
-        
+
         for (const p of ps.items) {
           const t = p.text.trim();
           if (!t) continue;
-          
+
           // 跳过标题
-          if (skipRules.headings && (p.style.includes("Heading") || p.style.includes("标题"))) continue;
-          
+          if (
+            skipRules.headings &&
+            (p.style.includes("Heading") || p.style.includes("标题"))
+          )
+            continue;
+
           // 跳过表格内的段落
-          if (skipRules.tables && !p.parentTableOrNullObject.isNullObject) continue;
-          
+          if (skipRules.tables && !p.parentTableOrNullObject.isNullObject)
+            continue;
+
           // 跳过包含公式（行内/单行）的段落
           if (skipRules.formulas) {
             const xml = paraOoxmlMap.get(p);
-            if (xml && (xml.includes("<m:oMath") || xml.includes("<m:oMathPara"))) continue;
+            if (
+              xml &&
+              (xml.includes("<m:oMath") || xml.includes("<m:oMathPara"))
+            )
+              continue;
           }
-          
+
           // 跳过交叉引用（图表标题段落）
-          if (skipRules.crossReferences && /^(图|表|Figure|Table)\s*\d+/.test(t)) continue;
-          
+          if (
+            skipRules.crossReferences &&
+            /^(图|表|Figure|Table)\s*\d+/.test(t)
+          )
+            continue;
+
           // 跳过图片段落
           if (skipRules.images && p.inlinePictures.items.length > 0) continue;
-          
+
           // 跳过目录段落
-          if (skipRules.toc && (p.style.includes("TOC") || p.style.includes("目录"))) continue;
-          
+          if (
+            skipRules.toc &&
+            (p.style.includes("TOC") || p.style.includes("目录"))
+          )
+            continue;
+
           // 跳过摘要/致谢标题
-          if (t.startsWith("摘要") || t.startsWith("Abstract") || t.includes("致谢")) continue;
+          if (
+            t.startsWith("摘要") ||
+            t.startsWith("Abstract") ||
+            t.includes("致谢")
+          )
+            continue;
           // 跳过纯符号段落
           if (t.replace(/[^\w\u4e00-\u9fa5]/g, "").length === 0) continue;
 
@@ -143,16 +169,35 @@ export async function markSelection() {
         endCC.tag = `${BOU_END}_${session}_${globalCounter++}`;
         endCC.appearance = "Hidden";
 
-        const refMatches = p.search("\\[[0-9\\- ,]@\\]", { matchWildcards: true });
+        const refMatches = p.search("\\[[0-9\\- ,]@\\]", {
+          matchWildcards: true,
+        });
         refMatches.load("items");
-        
+
         let eqns = null;
         if (p.equations) {
           eqns = p.equations;
           eqns.load("items");
         }
 
-        searchTasks.push({ paragraph: p, refMatches, eqns, boundaryTags: { start: startCC.tag, end: endCC.tag }, startCC, endCC });
+        let footnotes = null;
+        if (
+          Office.context.requirements.isSetSupported("WordApi", "1.5") &&
+          p.footnotes
+        ) {
+          footnotes = p.footnotes;
+          footnotes.load("items/reference");
+        }
+
+        searchTasks.push({
+          paragraph: p,
+          refMatches,
+          eqns,
+          footnotes,
+          boundaryTags: { start: startCC.tag, end: endCC.tag },
+          startCC,
+          endCC,
+        });
       }
       await context.sync();
 
@@ -161,12 +206,31 @@ export async function markSelection() {
         task.itemsToShield = [];
         if (task.refMatches.items) {
           for (const m of task.refMatches.items) {
-            task.itemsToShield.push({ range: m, type: "REF", xml: m.getOoxml() });
+            task.itemsToShield.push({
+              range: m,
+              type: "REF",
+              xml: m.getOoxml(),
+            });
           }
         }
         if (task.eqns && task.eqns.items) {
           for (const eq of task.eqns.items) {
-            task.itemsToShield.push({ range: eq, type: "EQN", xml: eq.getOoxml() });
+            task.itemsToShield.push({
+              range: eq,
+              type: "EQN",
+              xml: eq.getOoxml(),
+            });
+          }
+        }
+        if (task.footnotes && task.footnotes.items) {
+          for (const fn of task.footnotes.items) {
+            if (fn.reference) {
+              task.itemsToShield.push({
+                range: fn.reference,
+                type: "FNOTE",
+                xml: fn.reference.getOoxml(),
+              });
+            }
           }
         }
       }
@@ -176,22 +240,28 @@ export async function markSelection() {
       for (const task of searchTasks) {
         const shieldMap = [];
         const allItems = [...task.itemsToShield];
-        
+
         for (let i = allItems.length - 1; i >= 0; i--) {
-            const item = allItems[i];
-            const uid = globalCounter++;
-            const token = `[${item.type}_${uid}]`;
-            
-            const cc = item.range.insertContentControl();
-            cc.tag = `${SHIELD_PREFIX}${uid}`;
-            cc.appearance = "Hidden";
-            cc.insertText(token, "Replace");
-            
-            shieldMap.push({ placeholder: token, id: uid, originalXml: item.xml.value });
+          const item = allItems[i];
+          const uid = globalCounter++;
+          const token = `[${item.type}_${uid}]`;
+
+          const cc = item.range.insertContentControl();
+          cc.tag = `${SHIELD_PREFIX}${uid}`;
+          cc.appearance = "Hidden";
+          cc.insertText(token, "Replace");
+
+          shieldMap.push({
+            placeholder: token,
+            id: uid,
+            originalXml: item.xml.value,
+          });
         }
 
         task.shieldMap = shieldMap;
-        const newRange = task.startCC.getRange("After").expandTo(task.endCC.getRange("Before"));
+        const newRange = task.startCC
+          .getRange("After")
+          .expandTo(task.endCC.getRange("Before"));
         newRange.load("text");
         task.newRange = newRange;
       }
@@ -202,7 +272,7 @@ export async function markSelection() {
         finalItems.push({
           text: task.newRange.text,
           refMap: task.shieldMap,
-          boundaryTags: task.boundaryTags
+          boundaryTags: task.boundaryTags,
         });
       }
     });
@@ -228,7 +298,7 @@ export async function autoRelinkRange(range) {
       const numMatch = m.text.match(/\d+/);
       if (numMatch) {
         m.hyperlink = `#${REF_BOOKMARK_PREFIX}${numMatch[0]}`;
-        m.font.color = "black"; 
+        m.font.color = "black";
         m.font.underline = "None";
       }
     }
@@ -237,31 +307,31 @@ export async function autoRelinkRange(range) {
 }
 
 function parseAiResult(text, refMap) {
-    // 升级正则，同时支持 REF 和 EQN 占位符
-    const regex = /[\[【「『](REF|EQN)_(\d+)[\]】」』]/g;
-    const parts = [];
-    let lastIndex = 0;
-    let match;
-    const placedIds = new Set();
-    
-    while ((match = regex.exec(text)) !== null) {
-        if (match.index > lastIndex) {
-            parts.push({ type: "text", val: text.substring(lastIndex, match.index) });
-        }
-        const type = match[1];
-        const id = parseInt(match[2]);
-        const placeholder = `[${type}_${id}]`;
-        
-        if (refMap.some(m => m.id === id)) {
-            parts.push({ type: "ref", id: id });
-            placedIds.add(id);
-        }
-        lastIndex = regex.lastIndex;
+  // 升级正则，同时支持 REF, EQN 和 FNOTE 占位符
+  const regex = /[\[【「『](REF|EQN|FNOTE)_(\d+)[\]】」』]/g;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+  const placedIds = new Set();
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: "text", val: text.substring(lastIndex, match.index) });
     }
-    if (lastIndex < text.length) {
-        parts.push({ type: "text", val: text.substring(lastIndex) });
+    const type = match[1];
+    const id = parseInt(match[2]);
+    const placeholder = `[${type}_${id}]`;
+
+    if (refMap.some((m) => m.id === id)) {
+      parts.push({ type: "ref", id: id });
+      placedIds.add(id);
     }
-    return { parts, placedIds };
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    parts.push({ type: "text", val: text.substring(lastIndex) });
+  }
+  return { parts, placedIds };
 }
 
 /**
@@ -273,8 +343,8 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
     ccs.load("items");
     await context.sync();
 
-    const startCC = ccs.items.find(c => c.tag === boundaryTags.start);
-    const endCC = ccs.items.find(c => c.tag === boundaryTags.end);
+    const startCC = ccs.items.find((c) => c.tag === boundaryTags.start);
+    const endCC = ccs.items.find((c) => c.tag === boundaryTags.end);
     if (!startCC || !endCC) {
       console.warn("Boundary CCs missing");
       return;
@@ -284,53 +354,69 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
     const { parts, placedIds } = parseAiResult(aiResult, refMap);
 
     // 2. 清空原本的旧文本
-    const targetRange = startCC.getRange("After").expandTo(endCC.getRange("Before"));
+    const targetRange = startCC
+      .getRange("After")
+      .expandTo(endCC.getRange("Before"));
     targetRange.clear();
 
     // 3. 链式组装新文本与引用的原始 OOXML
     let currentLoc = startCC.getRange("After");
     for (const part of parts) {
-        if (part.type === "text") {
-            currentLoc = currentLoc.insertText(part.val, "After");
-        } else if (part.type === "ref") {
-            const mapItem = refMap.find(m => m.id === part.id);
-            if (mapItem) {
-                currentLoc = currentLoc.insertOoxml(mapItem.originalXml, "After");
-            }
+      if (part.type === "text") {
+        currentLoc = currentLoc.insertText(part.val, "After");
+      } else if (part.type === "ref") {
+        const mapItem = refMap.find((m) => m.id === part.id);
+        if (mapItem) {
+          currentLoc = currentLoc.insertOoxml(mapItem.originalXml, "After");
         }
+      }
     }
 
     // 4. 强行恢复被 AI 删掉的孤儿引用
-    const orphans = refMap.filter(m => !placedIds.has(m.id));
+    const orphans = refMap.filter((m) => !placedIds.has(m.id));
     for (const o of orphans) {
-        currentLoc = currentLoc.insertOoxml(o.originalXml, "After");
+      currentLoc = currentLoc.insertOoxml(o.originalXml, "After");
     }
 
     await context.sync();
-    
+
     // 5. 强力擦除 AI 幻觉产生的假占位符（所有真的已经被还原为 XML，剩下的全是捏造出的纯文本垃圾）
     try {
-        const fakeSearch = startCC.getRange("After").expandTo(endCC.getRange("Before"));
-        // 搜索 REF 和 EQN 的各种可能括号形式
-        const patterns = [
-            "\\[REF_[0-9]@\\]", "【REF_[0-9]@】", "「REF_[0-9]@」", "『REF_[0-9]@』",
-            "\\[EQN_[0-9]@\\]", "【EQN_[0-9]@】", "「EQN_[0-9]@」", "『EQN_[0-9]@』"
-        ];
-        
-        for (const p of patterns) {
-            const fakes = fakeSearch.search(p, { matchWildcards: true });
-            fakes.load("items");
-            await context.sync();
-            if (fakes.items) {
-                for (const ft of fakes.items) ft.insertText("", "Replace");
-            }
-        }
+      const fakeSearch = startCC
+        .getRange("After")
+        .expandTo(endCC.getRange("Before"));
+      // 搜索 REF, EQN 和 FNOTE 的各种可能括号形式
+      const patterns = [
+        "\\[REF_[0-9]@\\]",
+        "【REF_[0-9]@】",
+        "「REF_[0-9]@」",
+        "『REF_[0-9]@』",
+        "\\[EQN_[0-9]@\\]",
+        "【EQN_[0-9]@】",
+        "「EQN_[0-9]@」",
+        "『EQN_[0-9]@』",
+        "\\[FNOTE_[0-9]@\\]",
+        "【FNOTE_[0-9]@】",
+        "「FNOTE_[0-9]@」",
+        "『FNOTE_[0-9]@』",
+      ];
+
+      for (const p of patterns) {
+        const fakes = fakeSearch.search(p, { matchWildcards: true });
+        fakes.load("items");
         await context.sync();
+        if (fakes.items) {
+          for (const ft of fakes.items) ft.insertText("", "Replace");
+        }
+      }
+      await context.sync();
     } catch (e) {}
 
     // 最终自愈：在具有孤儿和新插入内容扩展后的完整段落范围内扫描
     // 【关键修复】必须在删除 startCC 和 endCC 之前获取并操作它们！
-    const finalSeg = startCC.getRange("After").expandTo(endCC.getRange("Before"));
+    const finalSeg = startCC
+      .getRange("After")
+      .expandTo(endCC.getRange("Before"));
     await autoRelinkRange(finalSeg);
 
     // 清理 CC：严格限制只清理本段的起始保护圈，防止把后面段落排队中的作用域给删了
@@ -338,9 +424,12 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
     allCCs.load("items");
     await context.sync();
     for (const c of allCCs.items) {
-        if (c.tag && (c.tag === boundaryTags.start || c.tag === boundaryTags.end)) {
-            c.delete(true);
-        }
+      if (
+        c.tag &&
+        (c.tag === boundaryTags.start || c.tag === boundaryTags.end)
+      ) {
+        c.delete(true);
+      }
     }
     await context.sync();
   });
@@ -353,57 +442,67 @@ export async function executeAndReplace(processText, onStatus, signal) {
     segments = await markSelection();
     if (!segments || segments.length === 0) throw new Error("未选中内容");
 
-    if (onStatus) onStatus("processing", `📦 提取 ${segments.length} 段...`, true);
+    if (onStatus)
+      onStatus("processing", `📦 提取 ${segments.length} 段...`, true);
 
     // 现在，我们将包含整个选区信息的 segments 一把抛给业务层组合发送，防止 503 限流
     const aiTexts = await processText(segments, signal);
-    
+
     if (!aiTexts || aiTexts.length !== segments.length) {
-        throw new Error("大模型返回格式错乱：未能按结构处理全部段落。");
+      throw new Error("大模型返回格式错乱：未能按结构处理全部段落。");
     }
 
     if (onStatus) onStatus("processing", `🧩 重组排版中...`, true);
 
     // 取得结果后，依然走单点的 AST 回填，以确保 Word 排版里夹带的图片/表格被完美留存
     for (let i = 0; i < segments.length; i++) {
-        if (signal?.aborted) throw new Error("已取消");
-        const aiText = aiTexts[i];
-        const seg = segments[i];
-        if (aiText && aiText.trim()) {
-            await replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags);
-        }
+      if (signal?.aborted) throw new Error("已取消");
+      const aiText = aiTexts[i];
+      const seg = segments[i];
+      if (aiText && aiText.trim()) {
+        await replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags);
+      }
     }
     return { result: "完成" };
   } catch (err) {
     if (segments) {
-        // 智能回滚：如果大模型请求崩溃或被拒绝，必须把文档中由于第一步锁定而生成的 [REF_N] 给还原成原来的角标！
-        try {
-            await Word.run(async (context) => {
-                const ccs = context.document.contentControls;
-                ccs.load("items");
+      // 智能回滚：如果大模型请求崩溃或被拒绝，必须把文档中由于第一步锁定而生成的 [REF_N] 给还原成原来的角标！
+      try {
+        await Word.run(async (context) => {
+          const ccs = context.document.contentControls;
+          ccs.load("items");
+          await context.sync();
+
+          for (const seg of segments) {
+            const startCC = ccs.items.find(
+              (c) => c.tag === seg.boundaryTags.start,
+            );
+            const endCC = ccs.items.find((c) => c.tag === seg.boundaryTags.end);
+            if (startCC && endCC) {
+              const currentSeg = startCC
+                .getRange("After")
+                .expandTo(endCC.getRange("Before"));
+              for (const mapItem of seg.refMap) {
+                // 修正回滚正则，支持 REF, EQN 和 FNOTE
+                const placeholder = mapItem.placeholder
+                  .replace("[", "\\[")
+                  .replace("]", "\\]");
+                const s = currentSeg.search(placeholder, {
+                  matchWildcards: false,
+                });
+                s.load("items");
                 await context.sync();
-                
-                for (const seg of segments) {
-                    const startCC = ccs.items.find(c => c.tag === seg.boundaryTags.start);
-                    const endCC = ccs.items.find(c => c.tag === seg.boundaryTags.end);
-                    if (startCC && endCC) {
-                        const currentSeg = startCC.getRange("After").expandTo(endCC.getRange("Before"));
-                        for (const mapItem of seg.refMap) {
-                            // 修正回滚正则，支持 REF 和 EQN
-                            const placeholder = mapItem.placeholder.replace("[", "\\[").replace("]", "\\]");
-                            const s = currentSeg.search(placeholder, { matchWildcards: false });
-                            s.load("items");
-                            await context.sync();
-                            if (s.items && s.items.length > 0) {
-                                for (const t of s.items) t.insertOoxml(mapItem.originalXml, "Replace");
-                            }
-                        }
-                    }
+                if (s.items && s.items.length > 0) {
+                  for (const t of s.items)
+                    t.insertOoxml(mapItem.originalXml, "Replace");
                 }
-            });
-        } catch (rollbackErr) {
-            console.error("Rollback failed:", rollbackErr);
-        }
+              }
+            }
+          }
+        });
+      } catch (rollbackErr) {
+        console.error("Rollback failed:", rollbackErr);
+      }
     }
     await clearMarks();
     throw err;
@@ -411,15 +510,20 @@ export async function executeAndReplace(processText, onStatus, signal) {
 }
 
 export async function clearMarks() {
-    await Word.run(async (context) => {
-        const ccs = context.document.contentControls;
-        ccs.load("items");
-        await context.sync();
-        for (const c of ccs.items) {
-            if (c.tag && (c.tag.startsWith(SHIELD_PREFIX) || c.tag.startsWith(BOU_START) || c.tag.startsWith(BOU_END))) {
-                c.delete(true);
-            }
-        }
-        await context.sync();
-    });
+  await Word.run(async (context) => {
+    const ccs = context.document.contentControls;
+    ccs.load("items");
+    await context.sync();
+    for (const c of ccs.items) {
+      if (
+        c.tag &&
+        (c.tag.startsWith(SHIELD_PREFIX) ||
+          c.tag.startsWith(BOU_START) ||
+          c.tag.startsWith(BOU_END))
+      ) {
+        c.delete(true);
+      }
+    }
+    await context.sync();
+  });
 }

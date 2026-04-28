@@ -231,10 +231,10 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
   try {
     const result = await ooxml.executeAndReplace(
       async (segments, signal) => {
-        let hasRefs = segments.some(s => s.refMap && s.refMap.length > 0);
+        let hasShields = segments.some(s => s.refMap && s.refMap.length > 0);
         let redLine = "";
-        if (hasRefs) {
-          redLine += "\n\n【绝对禁令】：文中的 [REF_N] 是物理引用锚点，你必须原封不动地保留所有 [REF_N]（包括里面的 REF、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
+        if (hasShields) {
+          redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
         }
 
         let fullText = "";
@@ -279,7 +279,7 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
       currentAbortController.signal
     );
 
-    showInlineStatus("done", `${actionName}完成 ✓`);
+    showInlineStatus("done", `${actionName}完成`);
   } catch (err) {
     if (err.name === "AbortError" || err.message === "已取消") {
       showInlineStatus("error", "用户已中止");
@@ -320,30 +320,57 @@ function showInlineStatus(type, message, canCancel = false) {
     bar = document.createElement("div");
     bar.id = "inline-status";
     const grid = document.getElementById("action-grid");
-    grid.parentNode.insertBefore(bar, grid.nextSibling);
+    if (grid) {
+      grid.parentNode.insertBefore(bar, grid.nextSibling);
+    }
   }
 
   bar.className = `inline-status ${type}`;
+  bar.style.opacity = "1";
 
-  let html = "";
+  let iconHtml = "";
   if (type === "processing") {
-    html = `<span class="inline-spinner"></span><span style="flex:1">${message}</span>`;
-    if (canCancel) {
-      html += `<button class="btn btn-sm btn-ghost" id="inline-cancel-btn" style="padding: 2px 6px; font-size: 10px;">中断</button>`;
-    }
+    iconHtml = `<div class="inline-spinner"></div>`;
   } else if (type === "done") {
-    html = `<span class="inline-icon done">✓</span><span style="flex:1">${message}</span><button class="btn btn-sm btn-ghost" id="inline-dismiss-btn" style="padding: 2px 6px; font-size: 10px; opacity: 0.7;" title="关闭">✕</button>`;
+    iconHtml = `<span class="inline-icon done">✓</span>`;
   } else if (type === "error") {
-    html = `<span class="inline-icon error">✕</span><span>${message}</span>`;
+    iconHtml = `<span class="inline-icon error">✕</span>`;
   }
 
-  bar.innerHTML = html;
+  let actionHtml = "";
+  if (type === "processing" && canCancel) {
+    actionHtml = `<button class="btn btn-sm btn-ghost" id="inline-cancel-btn" style="padding: 2px 6px; font-size: 10px; flex-shrink: 0; margin-left: 4px;">中断</button>`;
+  } else if (type === "done") {
+    actionHtml = `<button class="btn btn-sm btn-ghost" id="inline-dismiss-btn" style="padding: 2px 6px; font-size: 10px; opacity: 0.7; flex-shrink: 0; margin-left: 4px;" title="关闭">✕</button>`;
+  }
+
+  bar.innerHTML = `
+    ${iconHtml}
+    <div class="status-content">
+      <span class="status-text">${message}</span>
+    </div>
+    ${actionHtml}
+  `;
+
+  // 检查是否需要滚动
+  const content = bar.querySelector(".status-content");
+  const text = bar.querySelector(".status-text");
+  if (content && text) {
+    // 延迟一帧确保 DOM 渲染完成
+    requestAnimationFrame(() => {
+      const overflow = text.scrollWidth - content.clientWidth;
+      if (overflow > 0) {
+        text.style.setProperty("--scroll-dist", `-${overflow + 10}px`);
+        text.classList.add("marquee-active");
+      }
+    });
+  }
 
   // 绑定取消事件
   const cancelBtn = document.getElementById("inline-cancel-btn");
   if (cancelBtn) {
     cancelBtn.addEventListener("click", () => {
-      if (currentAbortController) {
+      if (typeof currentAbortController !== "undefined" && currentAbortController) {
         currentAbortController.abort(new Error("已取消"));
       }
     });
