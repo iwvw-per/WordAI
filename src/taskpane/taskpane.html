@@ -233,6 +233,22 @@
       </section>
 
       <section class="section">
+        <h2 class="section-title">并发控制</h2>
+        <p class="section-desc">同时进行 AI 处理的最大任务数</p>
+        <div class="form-group" style="margin-top: 8px;">
+          <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>最大并发任务数</span>
+            <span id="concurrency-value" class="badge">1</span>
+          </label>
+          <input type="range" id="concurrency-slider" class="form-range" min="1" max="5" step="1" value="1" style="margin-top: 6px;" />
+          <div class="range-labels" style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-top:2px;">
+            <span>串行 (1)</span>
+            <span>极速并发 (5)</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
         <h2 class="section-title">
           提示词模板
           <button class="btn btn-sm btn-ghost" id="add-prompt-btn">＋</button>
@@ -242,7 +258,7 @@
       </section>
 
       <footer class="settings-footer">
-        <p>WordAI v1.0.6</p>
+        <p>WordAI v1.0.7</p>
       </footer>
     </div>
   </div>

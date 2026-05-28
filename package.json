@@ -1,6 +1,6 @@
 {
   "name": "word-ai",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Word LLM 智能文字处理插件",
   "main": "src/taskpane/taskpane.js",
   "scripts": {

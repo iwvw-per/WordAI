@@ -57,14 +57,12 @@ export async function markSelection() {
 
         for (const p of ps.items) {
           p.load(["text", "style"]);
-          // 加载 inlinePictures 用于图片检测
           if (skipRules.images) {
             p.inlinePictures.load("items");
           }
         }
         await context.sync();
 
-        // 对需要检测表格的段落，批量加载 parentTableOrNullObject
         if (skipRules.tables) {
           for (const p of ps.items) {
             p.parentTableOrNullObject.load("isNullObject");
@@ -72,7 +70,6 @@ export async function markSelection() {
           await context.sync();
         }
 
-        // 对需要检测公式的段落，批量获取 OOXML 做 oMath 检测
         let paraOoxmlMap = new Map();
         if (skipRules.formulas) {
           const ooxmlPromises = [];
@@ -92,18 +89,15 @@ export async function markSelection() {
           const t = p.text.trim();
           if (!t) continue;
 
-          // 跳过标题
           if (
             skipRules.headings &&
             (p.style.includes("Heading") || p.style.includes("标题"))
           )
             continue;
 
-          // 跳过表格内的段落
           if (skipRules.tables && !p.parentTableOrNullObject.isNullObject)
             continue;
 
-          // 跳过包含公式（行内/单行）的段落
           if (skipRules.formulas) {
             const xml = paraOoxmlMap.get(p);
             if (
@@ -113,31 +107,26 @@ export async function markSelection() {
               continue;
           }
 
-          // 跳过交叉引用（图表标题段落）
           if (
             skipRules.crossReferences &&
             /^(图|表|Figure|Table)\s*\d+/.test(t)
           )
             continue;
 
-          // 跳过图片段落
           if (skipRules.images && p.inlinePictures.items.length > 0) continue;
 
-          // 跳过目录段落
           if (
             skipRules.toc &&
             (p.style.includes("TOC") || p.style.includes("目录"))
           )
             continue;
 
-          // 跳过摘要/致谢标题
           if (
             t.startsWith("摘要") ||
             t.startsWith("Abstract") ||
             t.includes("致谢")
           )
             continue;
-          // 跳过纯符号段落
           if (t.replace(/[^\w\u4e00-\u9fa5]/g, "").length === 0) continue;
 
           validParagraphs.push(p);
@@ -146,124 +135,103 @@ export async function markSelection() {
 
       if (validParagraphs.length === 0) return;
 
-      // 第一步：批量搜索引文与公式
-      const searchTasks = [];
+      // 4. 将整个合法段落集合包装为唯一一个整体 Task
       const session = Date.now() + "_" + Math.floor(Math.random() * 100);
+      const startCC = validParagraphs[0].getRange("Start").insertContentControl();
+      startCC.tag = `${BOU_START}_${session}_0`;
+      startCC.appearance = "Hidden";
+      
+      const endCC = validParagraphs[validParagraphs.length - 1].getRange("End").insertContentControl();
+      endCC.tag = `${BOU_END}_${session}_0`;
+      endCC.appearance = "Hidden";
+      await context.sync();
 
-      for (const p of validParagraphs) {
-        const startCC = p.getRange("Start").insertContentControl();
-        startCC.tag = `${BOU_START}_${session}_${globalCounter}`;
-        startCC.appearance = "Hidden";
-        const endCC = p.getRange("End").insertContentControl();
-        endCC.tag = `${BOU_END}_${session}_${globalCounter++}`;
-        endCC.appearance = "Hidden";
+      const totalRange = startCC.getRange("After").expandTo(endCC.getRange("Before"));
 
-        const refMatches = p.search("\\[[0-9\\- ,]@\\]", {
-          matchWildcards: true,
-        });
-        refMatches.load("items");
+      // 批量搜索引文、公式与脚注
+      const refMatches = totalRange.search("\\[[0-9\\- ,]@\\]", {
+        matchWildcards: true,
+      });
+      refMatches.load("items");
 
-        let eqns = null;
-        if (p.equations) {
-          eqns = p.equations;
-          eqns.load("items");
-        }
+      let eqns = null;
+      if (totalRange.equations) {
+        eqns = totalRange.equations;
+        eqns.load("items");
+      }
 
-        let footnotes = null;
-        if (
-          Office.context.requirements.isSetSupported("WordApi", "1.5") &&
-          p.footnotes
-        ) {
-          footnotes = p.footnotes;
-          footnotes.load("items/reference");
-        }
-
-        searchTasks.push({
-          paragraph: p,
-          refMatches,
-          eqns,
-          footnotes,
-          boundaryTags: { start: startCC.tag, end: endCC.tag },
-          startCC,
-          endCC,
-        });
+      let footnotes = null;
+      if (
+        Office.context.requirements.isSetSupported("WordApi", "1.5") &&
+        totalRange.footnotes
+      ) {
+        footnotes = totalRange.footnotes;
+        footnotes.load("items/reference");
       }
       await context.sync();
 
-      // 第二步：批量加载 OOXML
-      for (const task of searchTasks) {
-        task.itemsToShield = [];
-        if (task.refMatches.items) {
-          for (const m of task.refMatches.items) {
-            task.itemsToShield.push({
-              range: m,
-              type: "REF",
-              xml: m.getOoxml(),
-            });
-          }
-        }
-        if (task.eqns && task.eqns.items) {
-          for (const eq of task.eqns.items) {
-            task.itemsToShield.push({
-              range: eq,
-              type: "EQN",
-              xml: eq.getOoxml(),
-            });
-          }
-        }
-        if (task.footnotes && task.footnotes.items) {
-          for (const fn of task.footnotes.items) {
-            if (fn.reference) {
-              task.itemsToShield.push({
-                range: fn.reference,
-                type: "FNOTE",
-                xml: fn.reference.getOoxml(),
-              });
-            }
-          }
-        }
-      }
-      await context.sync();
-
-      // 第三步：逆序替换
-      for (const task of searchTasks) {
-        const shieldMap = [];
-        const allItems = [...task.itemsToShield];
-
-        for (let i = allItems.length - 1; i >= 0; i--) {
-          const item = allItems[i];
-          const uid = globalCounter++;
-          const token = `[${item.type}_${uid}]`;
-
-          const cc = item.range.insertContentControl();
-          cc.tag = `${SHIELD_PREFIX}${uid}`;
-          cc.appearance = "Hidden";
-          cc.insertText(token, "Replace");
-
-          shieldMap.push({
-            placeholder: token,
-            id: uid,
-            originalXml: item.xml.value,
+      // 批量搜集并加载 OOXML
+      const itemsToShield = [];
+      if (refMatches.items) {
+        for (const m of refMatches.items) {
+          itemsToShield.push({
+            range: m,
+            type: "REF",
+            xml: m.getOoxml(),
           });
         }
-
-        task.shieldMap = shieldMap;
-        const newRange = task.startCC
-          .getRange("After")
-          .expandTo(task.endCC.getRange("Before"));
-        newRange.load("text");
-        task.newRange = newRange;
+      }
+      if (eqns && eqns.items) {
+        for (const eq of eqns.items) {
+          itemsToShield.push({
+            range: eq,
+            type: "EQN",
+            xml: eq.getOoxml(),
+          });
+        }
+      }
+      if (footnotes && footnotes.items) {
+        for (const fn of footnotes.items) {
+          if (fn.reference) {
+            itemsToShield.push({
+              range: fn.reference,
+              type: "FNOTE",
+              xml: fn.reference.getOoxml(),
+            });
+          }
+        }
       }
       await context.sync();
 
-      // 第四步：提取结果
-      for (const task of searchTasks) {
-        finalItems.push({
-          text: task.newRange.text,
-          refMap: task.shieldMap,
-          boundaryTags: task.boundaryTags,
+      // 逆序进行 ContentControl 标记保护
+      const shieldMap = [];
+      for (let i = itemsToShield.length - 1; i >= 0; i--) {
+        const item = itemsToShield[i];
+        const uid = globalCounter++;
+        const token = `[${item.type}_${uid}]`;
+
+        const cc = item.range.insertContentControl();
+        cc.tag = `${SHIELD_PREFIX}${uid}`;
+        cc.appearance = "Hidden";
+        cc.insertText(token, "Replace");
+
+        shieldMap.push({
+          placeholder: token,
+          id: uid,
+          originalXml: item.xml.value,
         });
       }
+      await context.sync();
+
+      // 重新读取带有遮罩后的整体 Range 文本
+      totalRange.load("text");
+      await context.sync();
+
+      finalItems.push({
+        text: totalRange.text,
+        refMap: shieldMap,
+        boundaryTags: { start: startCC.tag, end: endCC.tag },
+      });
     });
   } catch (err) {
     console.error("markSelection Error:", err);

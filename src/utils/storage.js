@@ -11,6 +11,7 @@ const STORAGE_KEYS = {
   SKIP_RULES: "wordai_skip_rules",
   TEMPERATURE: "wordai_temperature",
   DIFF_MODE: "wordai_diff_mode",
+  CONCURRENCY_LIMIT: "wordai_concurrency_limit",
 };
 
 // 默认预设提示词
@@ -324,6 +325,21 @@ export function setDiffMode(enabled) {
  */
 export function isConfigured() {
   return !!(getEndpoint() && getApiKey() && getModel());
+}
+
+/**
+ * 获取多线程并发限制数
+ */
+export function getConcurrencyLimit() {
+  const limit = localStorage.getItem(STORAGE_KEYS.CONCURRENCY_LIMIT);
+  return limit !== null ? parseInt(limit, 10) : 1;
+}
+
+/**
+ * 设置多线程并发限制数
+ */
+export function setConcurrencyLimit(limit) {
+  localStorage.setItem(STORAGE_KEYS.CONCURRENCY_LIMIT, limit.toString());
 }
 
 export { DEFAULT_PROMPTS, DEFAULT_SKIP_RULES };

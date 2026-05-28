@@ -30,7 +30,7 @@ let currentAbortController = null;
 
 // 全局多任务异步排队调度队列状态
 let globalTaskQueue = [];
-let isTaskQueueRunning = false;
+let activeTaskCount = 0;
 let taskCounter = 0;
 
 let refNavState = {
@@ -320,7 +320,6 @@ function bindActionEvents() {
   });
 }
 
-
 // ==================== 核心：一键执行 ====================
 async function executeAction(systemPrompt, actionName, triggerBtn) {
   if (!storage.isConfigured()) {
@@ -335,7 +334,6 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
   }
 
   const consoleSection = document.getElementById("pipeline-console-section");
-  const consoleTitle = document.getElementById("pipeline-console-title");
   const consoleBody = document.getElementById("pipeline-console-body");
 
   // 展示控制台面板
@@ -365,15 +363,13 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     actionName: actionName,
     systemPrompt: systemPrompt,
     segments: segments,
-    status: "pending",
-    successCount: 0
+    status: "pending"
   };
 
   globalTaskQueue.push(pipelineTask);
 
   // 在滚动控制台动态注入精简的单行任务项
   if (consoleBody) {
-    // 如果已经有一些残留的等待占位符内容，将其移除
     const placeholder = consoleBody.querySelector(".console-line.system");
     if (placeholder && placeholder.textContent.includes("流水线已准备就绪")) {
       placeholder.remove();
@@ -385,7 +381,7 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     taskLine.innerHTML = `
       <span class="task-badge">#${taskCounter}</span>
       <span class="task-name" title="${escapeHtml(actionName)}">${escapeHtml(actionName)}</span>
-      <span class="task-progress" id="console-progress-${taskId}">⏳ 排队中 (共 ${segments.length} 段)</span>
+      <span class="task-progress" id="console-progress-${taskId}">⏳ 排队中</span>
     `;
 
     consoleBody.appendChild(taskLine);
@@ -399,148 +395,152 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
 }
 
 /**
- * 全局多任务异步排队调度引擎 (FIFO Queue)
+ * 全局多任务异步排队调度引擎（支持自定义多线程并行）
  */
 async function processTaskQueue() {
-  if (isTaskQueueRunning) return; // 调度器已在后台运行中，新点击的 Task 挂载队列尾部即可
-  isTaskQueueRunning = true;
+  const concurrencyLimit = storage.getConcurrencyLimit();
 
-  const consoleTitle = document.getElementById("pipeline-console-title");
+  while (activeTaskCount < concurrencyLimit && globalTaskQueue.length > 0) {
+    const currentTask = globalTaskQueue.shift();
+    activeTaskCount++;
+    
+    // 非阻塞地启动该任务的异步执行链
+    runSingleTaskAsync(currentTask).catch(err => {
+      console.error("执行任务异步链出错:", err);
+    });
+  }
+
+  updateConsoleTitleState();
+}
+
+/**
+ * 非阻塞执行单个任务的完整异步处理链
+ */
+async function runSingleTaskAsync(currentTask) {
   const consoleBody = document.getElementById("pipeline-console-body");
 
-  while (globalTaskQueue.length > 0) {
-    const currentTask = globalTaskQueue.shift();
-    currentTask.status = "processing";
+  currentTask.status = "processing";
+  const taskId = currentTask.id;
+  const taskLine = document.getElementById(`console-task-${taskId}`);
+  const progressSpan = document.getElementById(`console-progress-${taskId}`);
 
-    const taskId = currentTask.id;
-    const taskLine = document.getElementById(`console-task-${taskId}`);
-    const progressSpan = document.getElementById(`console-progress-${taskId}`);
+  if (taskLine) {
+    taskLine.className = "console-line processing";
+  }
+  updateConsoleTitleState();
 
-    if (taskLine) {
-      taskLine.className = "console-line processing";
-    }
+  currentTask.abortController = new AbortController();
+  const signal = currentTask.abortController.signal;
+  const seg = currentTask.segments[0]; // 整块化改写，必然只有 1 段
 
-    if (consoleTitle) consoleTitle.textContent = `任务 #${currentTask.num} 正在执行...`;
+  let retryCount = 0;
+  const retryLimit = 3;
+  let success = false;
 
-    let successCount = 0;
-    currentAbortController = new AbortController();
-    const signal = currentAbortController.signal;
-    const totalSegs = currentTask.segments.length;
+  while (retryCount < retryLimit) {
+    if (signal.aborted) break;
 
-    // 逐个处理当前 Task 下的分段
-    for (let j = 0; j < totalSegs; j++) {
-      if (signal.aborted) break;
-
-      const seg = currentTask.segments[j];
-      let retryCount = 0;
-      const retryLimit = 3;
-      let success = false;
-
-      while (retryCount < retryLimit) {
-        if (signal.aborted) break;
-
-        try {
-          if (progressSpan) {
-            if (retryCount > 0) {
-              progressSpan.textContent = `⏳ 段 ${j + 1}/${totalSegs} 重试 ${retryCount}/3...`;
-            } else {
-              progressSpan.textContent = `⚡ 段 ${j + 1}/${totalSegs} 请求云端中...`;
-            }
-            consoleBody.scrollTop = consoleBody.scrollHeight;
-          }
-
-          // 拼装红线限制提示词（防幻觉保护公式与角标）
-          let hasShields = seg.refMap && seg.refMap.length > 0;
-          let redLine = "";
-          if (hasShields) {
-            redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
-          }
-          const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
-
-          // 触发流式输出并在控制终端行渲染 delta
-          const raw = await llm.callLLMStream(finalPrompt, seg.text, (delta, currentText) => {
-            if (progressSpan && !signal.aborted) {
-              let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
-              if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
-              progressSpan.textContent = `⚡ 段 ${j + 1}/${totalSegs} 改写中: "${displaySnippet}█"`;
-            }
-          }, signal);
-
-          if (signal.aborted) throw new Error("已取消");
-
-          if (progressSpan) {
-            progressSpan.textContent = `🧩 段 ${j + 1}/${totalSegs} 恢复排版中...`;
-          }
-
-          // 调用单点 AST 还原回填
-          const cleanRaw = llm.cleanAiResponse(raw);
-          await ooxml.replaceSingleMarkedContent(cleanRaw, seg.refMap, seg.boundaryTags);
-
-          // 回填成功
-          successCount++;
-          success = true;
-          break; // 成功后跳出重试循环
-
-        } catch (err) {
-          // 中途手动取消，退场
-          if (err.name === "AbortError" || err.message === "已取消") {
-            throw err; // 抛出到最外层以跳出分段循环
-          }
-
-          retryCount++;
-          if (retryCount < retryLimit) {
-            console.warn(`段落 ${j + 1} 失败，正在进行第 ${retryCount} 次重试. 错误: ${err.message}`);
-            // 重试前避让延时 500ms，防止过载
-            await new Promise(resolve => setTimeout(resolve, 500));
-          } else {
-            console.error(`段落 ${j + 1} 在重试 ${retryLimit} 次后依然失败. 错误: ${err.message}`);
-            // 清理当前段落的锁屏标记
-            try {
-              await Word.run(async (context) => {
-                const startCCs = context.document.contentControls.getByTag(seg.boundaryTags.start);
-                const endCCs = context.document.contentControls.getByTag(seg.boundaryTags.end);
-                startCCs.load("items");
-                endCCs.load("items");
-                await context.sync();
-                if (startCCs.items.length > 0) startCCs.items[0].delete(true);
-                if (endCCs.items.length > 0) endCCs.items[0].delete(true);
-                await context.sync();
-              });
-            } catch {}
-            // 失败 3 次后抛出异常或退出该段落，继续下一个段落
-            break;
-          }
-        }
-      }
-    }
-
-    // 更新 Task 头部为完成或中止状态
-    if (taskLine) {
-      if (signal.aborted) {
-        taskLine.className = "console-line error";
-        if (progressSpan) {
-          progressSpan.textContent = `🛑 已中止 (成功 ${successCount}/${totalSegs} 段)`;
-        }
-      } else {
-        if (successCount === totalSegs) {
-          taskLine.className = "console-line done";
-          if (progressSpan) {
-            progressSpan.textContent = `✅ 成功 (${successCount}/${totalSegs} 段)`;
-          }
+    try {
+      if (progressSpan) {
+        if (retryCount > 0) {
+          progressSpan.textContent = `⏳ 重试 ${retryCount}/3...`;
         } else {
-          taskLine.className = "console-line error";
-          if (progressSpan) {
-            progressSpan.textContent = `❌ 部分失败 (成功 ${successCount}/${totalSegs} 段)`;
-          }
+          progressSpan.textContent = `⚡ 请求云端中...`;
         }
+        if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
       }
-      consoleBody.scrollTop = consoleBody.scrollHeight;
+
+      // 拼装红线限制提示词
+      let hasShields = seg.refMap && seg.refMap.length > 0;
+      let redLine = "";
+      if (hasShields) {
+        redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
+      }
+      const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
+
+      // 触发流式输出并在控制终端行渲染 delta
+      const raw = await llm.callLLMStream(finalPrompt, seg.text, (delta, currentText) => {
+        if (progressSpan && !signal.aborted) {
+          let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
+          if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
+          progressSpan.textContent = `⚡ 改写中: "${displaySnippet}█"`;
+        }
+      }, signal);
+
+      if (signal.aborted) throw new Error("已取消");
+
+      if (progressSpan) {
+        progressSpan.textContent = `🧩 恢复排版中...`;
+      }
+
+      // 调用单点 AST 还原回填
+      const cleanRaw = llm.cleanAiResponse(raw);
+      await ooxml.replaceSingleMarkedContent(cleanRaw, seg.refMap, seg.boundaryTags);
+
+      success = true;
+      break; // 成功后跳出重试循环
+
+    } catch (err) {
+      if (err.name === "AbortError" || err.message === "已取消") {
+        break; // 手动取消退场
+      }
+
+      retryCount++;
+      if (retryCount < retryLimit) {
+        console.warn(`任务 #${currentTask.num} 失败，正在进行第 ${retryCount} 次重试. 错误: ${err.message}`);
+        await new Promise(resolve => setTimeout(resolve, 500)); // 重试前避让延时
+      } else {
+        console.error(`任务 #${currentTask.num} 在重试 ${retryLimit} 次后依然失败. 错误: ${err.message}`);
+        // 彻底失败清理边界标记
+        try {
+          await Word.run(async (context) => {
+            const startCCs = context.document.contentControls.getByTag(seg.boundaryTags.start);
+            const endCCs = context.document.contentControls.getByTag(seg.boundaryTags.end);
+            startCCs.load("items");
+            endCCs.load("items");
+            await context.sync();
+            if (startCCs.items.length > 0) startCCs.items[0].delete(true);
+            if (endCCs.items.length > 0) endCCs.items[0].delete(true);
+            await context.sync();
+          });
+        } catch {}
+        break;
+      }
     }
   }
 
-  if (consoleTitle) consoleTitle.textContent = "队列已清空";
-  isTaskQueueRunning = false;
-  currentAbortController = null;
+  // 更新 Task 行的完成或中止状态
+  if (taskLine) {
+    if (signal.aborted) {
+      taskLine.className = "console-line error";
+      if (progressSpan) progressSpan.textContent = `🛑 已中止`;
+    } else if (success) {
+      taskLine.className = "console-line done";
+      if (progressSpan) progressSpan.textContent = `✅ 成功`;
+    } else {
+      taskLine.className = "console-line error";
+      if (progressSpan) progressSpan.textContent = `❌ 失败`;
+    }
+    if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
+  }
+
+  // 释放并发任务计数，并重新触发队列调度
+  activeTaskCount--;
+  updateConsoleTitleState();
+  processTaskQueue();
+}
+
+/**
+ * 动态刷新控制台总标题的线程执行状态
+ */
+function updateConsoleTitleState() {
+  const consoleTitle = document.getElementById("pipeline-console-title");
+  if (!consoleTitle) return;
+  if (activeTaskCount > 0) {
+    consoleTitle.textContent = `正在执行 (${activeTaskCount} 个任务)...`;
+  } else {
+    consoleTitle.textContent = globalTaskQueue.length > 0 ? "等待调度中" : "队列已清空";
+  }
 }
 
 function setAllActionsLoading(loading, activeBtn) {
@@ -660,6 +660,14 @@ function loadSettings() {
   document.getElementById("skip-toc").checked = rules.toc;
 
   document.getElementById("diff-mode-toggle").checked = storage.getDiffMode();
+
+  const concurrency = storage.getConcurrencyLimit();
+  const slider = document.getElementById("concurrency-slider");
+  const valueBadge = document.getElementById("concurrency-value");
+  if (slider && valueBadge) {
+    slider.value = concurrency;
+    valueBadge.textContent = concurrency;
+  }
 }
 
 function bindSettingsEvents() {
@@ -715,6 +723,17 @@ function bindSettingsEvents() {
   document.getElementById("diff-mode-toggle").addEventListener("change", (e) => {
     storage.setDiffMode(e.target.checked);
   });
+
+  // 并发控制
+  const concurrencySlider = document.getElementById("concurrency-slider");
+  const concurrencyValue = document.getElementById("concurrency-value");
+  if (concurrencySlider) {
+    concurrencySlider.addEventListener("input", (e) => {
+      const val = parseInt(e.target.value, 10);
+      if (concurrencyValue) concurrencyValue.textContent = val;
+      storage.setConcurrencyLimit(val);
+    });
+  }
 
   // 提示词管理
   document.getElementById("reset-prompts-btn").addEventListener("click", () => {
