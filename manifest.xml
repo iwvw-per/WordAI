@@ -7,7 +7,7 @@
   xsi:type="TaskPaneApp">
   
   <Id>a1b2c3d4-e5f6-7890-abcd-ef1234567890</Id>
-  <Version>1.0.4.0</Version>
+  <Version>1.0.6.0</Version>
   <ProviderName>WordAI</ProviderName>
   <DefaultLocale>zh-CN</DefaultLocale>
   <DisplayName DefaultValue="WordAI" />
@@ -76,6 +76,28 @@
               </Group>
             </OfficeTab>
           </ExtensionPoint>
+          
+          <!-- 新增：右键快捷上下文菜单 ExtensionPoint -->
+          <ExtensionPoint xsi:type="ContextMenu">
+            <OfficeMenu id="ContextMenuText">
+              <Control xsi:type="Button" id="WordAICtxDeaiDirectBtn">
+                <Label resid="CtxDeai.Label" />
+                <Supertip>
+                  <Title resid="CtxDeai.Label" />
+                  <Description resid="CtxDeai.Tooltip" />
+                </Supertip>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16x16" />
+                  <bt:Image size="32" resid="Icon.32x32" />
+                  <bt:Image size="80" resid="Icon.80x80" />
+                </Icon>
+                <Action xsi:type="ShowTaskpane">
+                  <TaskpaneId>WordAITaskPane</TaskpaneId>
+                  <SourceLocation resid="CtxDeai.Url" />
+                </Action>
+              </Control>
+            </OfficeMenu>
+          </ExtensionPoint>
         </DesktopFormFactor>
       </Host>
     </Hosts>
@@ -90,17 +112,29 @@
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://localhost:3000" />
         <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html" />
+        <bt:Url id="CtxGeneral.Url" DefaultValue="https://localhost:3000/taskpane.html?action=general" />
+        <bt:Url id="CtxPolish.Url" DefaultValue="https://localhost:3000/taskpane.html?action=polish" />
+        <bt:Url id="CtxDeai.Url" DefaultValue="https://localhost:3000/taskpane.html?action=deai" />
+        <bt:Url id="CtxCool.Url" DefaultValue="https://localhost:3000/taskpane.html?action=cool" />
       </bt:Urls>
       
       <bt:ShortStrings>
         <bt:String id="GetStarted.Title" DefaultValue="WordAI 已就绪" />
         <bt:String id="CommandsGroup.Label" DefaultValue="WordAI" />
         <bt:String id="TaskpaneButton.Label" DefaultValue="WordAI" />
+        <bt:String id="CtxGeneral.Label" DefaultValue="WordAI 助手" />
+        <bt:String id="CtxPolish.Label" DefaultValue="WordAI 润色" />
+        <bt:String id="CtxDeai.Label" DefaultValue="WordAI 降AI" />
+        <bt:String id="CtxCool.Label" DefaultValue="WordAI 降温" />
       </bt:ShortStrings>
       
       <bt:LongStrings>
         <bt:String id="GetStarted.Description" DefaultValue="点击 WordAI 按钮开始使用智能文字处理" />
         <bt:String id="TaskpaneButton.Tooltip" DefaultValue="打开 WordAI 侧边栏，使用 AI 处理选中的文字" />
+        <bt:String id="CtxGeneral.Tooltip" DefaultValue="使用 WordAI 快捷指令处理选中的文字" />
+        <bt:String id="CtxPolish.Tooltip" DefaultValue="快速润色当前选中的文字" />
+        <bt:String id="CtxDeai.Tooltip" DefaultValue="快速对当前选中的文字进行降重和消除 AI 感" />
+        <bt:String id="CtxCool.Tooltip" DefaultValue="对当前选中文字进行学术降温优化，增加严谨度并降低绝对化语气" />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

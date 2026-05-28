@@ -95,8 +95,17 @@ const DEFAULT_PROMPTS = [
     执行指令：
     
     请根据以上所有规则，对接下来提供的“原文”进行修改，生成符合上述特定风格的“修改后”文本。务必仔细揣摩每个规则的细节和示例，力求在风格上高度一致。注意不要过于口语化（通常情况下不会过于口语化，有一些比如至于xxx呢，这种的不要有）注意！你输出的内容不应原多于原文！应时刻记得字数和原文相符！注意！不要有‘’xxx呢‘’这种形式，如‘至于vue呢’
-    不要第一人称`,
+    不要第一人称
+
+    【学术降温优化指令】：请对下面的文本进行“降温”优化：降低绝对化语气（将“必然”“绝对”“完全”“无疑”等改为“可能”“通常”“在……条件下”“……之一”等）；去除空洞浮夸的修辞；对证据不足的推断加上“可能”“似乎”“有待验证”等限定；补充必要的适用条件和局限性。修改后文本的字数应与原文基本相当，上下浮动不超过10%。只输出修改后的文本，不要输出任何解释、说明或原文。`,
     color: "#ec4899",
+  },
+  {
+    id: "cool",
+    name: "降温",
+    icon: "❄️",
+    prompt: "请对下面的文本进行“降温”优化：降低绝对化语气（将“必然”“绝对”“完全”“无疑”等改为“可能”“通常”“在……条件下”“……之一”等）；去除空洞浮夸的修辞；对证据不足的推断加上“可能”“似乎”“有待验证”等限定；补充必要的适用条件和局限性。修改后文本的字数应与原文基本相当，上下浮动不超过10%。只输出修改后的文本，不要输出任何解释、说明或原文。",
+    color: "#0ea5e9",
   },
   {
     id: "rewrite",
@@ -232,7 +241,22 @@ export function getPrompts() {
           p.prompt = DEFAULT_PROMPTS.find(dp => dp.id === "deai").prompt;
           migrated = true;
         }
+        // 专家版“降AI”追加学术降温优化指令
+        if (p.id === "deai" && !p.prompt.includes("【学术降温优化指令】")) {
+          p.prompt = DEFAULT_PROMPTS.find(dp => dp.id === "deai").prompt;
+          migrated = true;
+        }
       });
+
+      // 自动热注入新增的“降温” (cool) 预设到本地缓存，免去用户手动重置缓存的烦恼
+      if (!parsed.find(p => p.id === "cool")) {
+        const coolPrompt = DEFAULT_PROMPTS.find(dp => dp.id === "cool");
+        if (coolPrompt) {
+          parsed.push(coolPrompt);
+          migrated = true;
+        }
+      }
+
       if (migrated) {
         setPrompts(parsed);
       }

@@ -35,8 +35,8 @@ export async function processMarkdownLine(container, line, refMap = []) {
   // 2. 基础段落处理：支持加粗和占位符
   const insertedRange = container.insertParagraph("", "End");
 
-  // 采用复合正则切分：同时匹配 **加粗** 和 {{REF_N}}
-  const parts = line.split(/(\*\*.*?\*\*|{{REF_\d+}})/g);
+  // 采用复合正则切分：同时匹配 **加粗** 和 [REF_N] / [EQN_N] / [FNOTE_N]
+  const parts = line.split(/(\*\*.*?\*\*|\[(?:REF|EQN|FNOTE)_\d+\])/g);
 
   for (const part of parts) {
     if (!part) continue;
@@ -45,10 +45,15 @@ export async function processMarkdownLine(container, line, refMap = []) {
       const boldText = part.substring(2, part.length - 2);
       const run = insertedRange.insertText(boldText, "End");
       run.font.bold = true;
-    } else if (part.startsWith("{{REF_") && part.endsWith("}}")) {
+    } else if (part.startsWith("[") && part.endsWith("]") && (part.includes("REF_") || part.includes("EQN_") || part.includes("FNOTE_"))) {
       const refItem = refMap.find(m => m.placeholder === part);
       if (refItem) {
-        insertedRange.insertOoxml(refItem.ooxml, "End");
+        const xmlValue = refItem.originalXml || refItem.ooxml;
+        if (xmlValue) {
+          insertedRange.insertOoxml(xmlValue, "End");
+        } else {
+          insertedRange.insertText(part, "End");
+        }
       } else {
         insertedRange.insertText(part, "End");
       }

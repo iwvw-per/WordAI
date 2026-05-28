@@ -38,18 +38,7 @@ export async function markSelection() {
         for (const p of pars.items) {
           const m = p.text.match(/^\[(\d+)\]/);
           if (m) {
-            try {
-              const searchResults = p.search(`\\[${m[1]}\\]`, {
-                matchWildcards: true,
-              });
-              searchResults.load("items");
-              await context.sync();
-              if (searchResults.items.length > 0) {
-                p.getRange("Start")
-                  .expandTo(searchResults.items[0])
-                  .insertBookmark(`${REF_BOOKMARK_PREFIX}${m[1]}`);
-              }
-            } catch (e) {}
+            p.getRange("Start").insertBookmark(`${REF_BOOKMARK_PREFIX}${m[1]}`);
           }
         }
         await context.sync();
@@ -337,7 +326,7 @@ function parseAiResult(text, refMap) {
 /**
  * 替换标记内容并恢复引用
  */
-async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
+export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
   await Word.run(async (context) => {
     const ccs = context.document.contentControls;
     ccs.load("items");
@@ -420,16 +409,16 @@ async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
     await autoRelinkRange(finalSeg);
 
     // 清理 CC：严格限制只清理本段的起始保护圈，防止把后面段落排队中的作用域给删了
-    const allCCs = context.document.contentControls;
-    allCCs.load("items");
+    const startCCs = context.document.contentControls.getByTag(boundaryTags.start);
+    const endCCs = context.document.contentControls.getByTag(boundaryTags.end);
+    startCCs.load("items");
+    endCCs.load("items");
     await context.sync();
-    for (const c of allCCs.items) {
-      if (
-        c.tag &&
-        (c.tag === boundaryTags.start || c.tag === boundaryTags.end)
-      ) {
-        c.delete(true);
-      }
+    if (startCCs.items.length > 0) {
+      startCCs.items[0].delete(true);
+    }
+    if (endCCs.items.length > 0) {
+      endCCs.items[0].delete(true);
     }
     await context.sync();
   });
@@ -512,7 +501,7 @@ export async function executeAndReplace(processText, onStatus, signal) {
 export async function clearMarks() {
   await Word.run(async (context) => {
     const ccs = context.document.contentControls;
-    ccs.load("items");
+    ccs.load("items/tag"); // ⚡ 仅 load 每一个 CC 的 tag 属性，极大地降低网络 payload 与耗时
     await context.sync();
     for (const c of ccs.items) {
       if (

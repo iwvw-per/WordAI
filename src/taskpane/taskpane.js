@@ -28,6 +28,11 @@ let isProcessing = false;
 let editingPromptId = null;
 let currentAbortController = null;
 
+// 全局多任务异步排队调度队列状态
+let globalTaskQueue = [];
+let isTaskQueueRunning = false;
+let taskCounter = 0;
+
 let refNavState = {
   items: [],
   currentIndex: 0
@@ -64,6 +69,104 @@ function initApp() {
   bindSettingsEvents();
   bindModalEvents();
   bindAcademicEvents();
+  bindDeckEvents();
+
+  handleUrlAction();
+}
+
+// 绑定快捷快捷学术操作台卡片的事件
+function bindDeckEvents() {
+  const btnClose = document.getElementById("btn-close-deck");
+  const deck = document.getElementById("quick-action-deck");
+  
+  if (btnClose && deck) {
+    btnClose.addEventListener("click", () => {
+      deck.classList.add("hidden");
+    });
+  }
+
+  const polishBtn = document.getElementById("btn-deck-polish");
+  const deaiBtn = document.getElementById("btn-deck-deai");
+  const coolBtn = document.getElementById("btn-deck-cool");
+
+  const runAction = async (actionType) => {
+    const prompts = storage.getPrompts();
+    let targetPrompt = null;
+    if (actionType === "polish") {
+      targetPrompt = prompts.find(p => p.id === "polish" || p.name.includes("润色"));
+    } else if (actionType === "deai") {
+      targetPrompt = prompts.find(p => p.id === "deai" || p.name.includes("降"));
+    } else if (actionType === "cool") {
+      targetPrompt = prompts.find(p => p.id === "cool" || p.name.includes("降温"));
+    }
+
+    if (targetPrompt) {
+      // 自动切回“操作”选项卡
+      const tabBtn = document.getElementById("tab-actions");
+      if (tabBtn) tabBtn.click();
+      await executeAction(targetPrompt.prompt, targetPrompt.name, null);
+    }
+  };
+
+  if (polishBtn) {
+    polishBtn.addEventListener("click", () => runAction("polish"));
+  }
+  if (deaiBtn) {
+    deaiBtn.addEventListener("click", () => runAction("deai"));
+  }
+  if (coolBtn) {
+    coolBtn.addEventListener("click", () => runAction("cool"));
+  }
+}
+
+// 处理来自 Word 右键菜单跳转传递的 action 参数并自动触发
+function handleUrlAction() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const action = params.get("action");
+    if (!action) return;
+
+    // 延迟 800ms 确保 Office/Word JS 以及 DOM 真正初始化就绪
+    setTimeout(async () => {
+      // 抹除 URL 中的 action 参数，防止后续页面重载或切换主题时发生二次意外触发（防老旧 IE 内核/ Office 沙盒崩溃保护）
+      if (window.history && typeof window.history.replaceState === "function") {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
+      if (action === "general") {
+        const deck = document.getElementById("quick-action-deck");
+        if (deck) {
+          deck.classList.remove("hidden");
+        }
+        // 自动切回“操作”选项卡
+        const tabBtn = document.getElementById("tab-actions");
+        if (tabBtn) tabBtn.click();
+        return;
+      }
+
+      const prompts = storage.getPrompts();
+      let targetPrompt = null;
+
+      if (action === "polish") {
+        targetPrompt = prompts.find(p => p.id === "polish" || p.name.includes("润色"));
+      } else if (action === "deai") {
+        targetPrompt = prompts.find(p => p.id === "deai" || p.name.includes("降"));
+      } else if (action === "cool") {
+        targetPrompt = prompts.find(p => p.id === "cool" || p.name.includes("降温"));
+      }
+
+      if (targetPrompt) {
+        // 自动切回“操作”选项卡
+        const tabBtn = document.getElementById("tab-actions");
+        if (tabBtn) tabBtn.click();
+
+        // 立即静默触发 AI 任务
+        await executeAction(targetPrompt.prompt, targetPrompt.name, null);
+      }
+    }, 800);
+  } catch (err) {
+    console.error("解析并触发右键快捷动作出错:", err);
+  }
 }
 
 // ==================== 主题 ====================
@@ -205,13 +308,21 @@ function bindActionEvents() {
     }
   });
 
+  document.getElementById("btn-clear-console")?.addEventListener("click", () => {
+    const body = document.getElementById("pipeline-console-body");
+    const title = document.getElementById("pipeline-console-title");
+    if (body) {
+      body.innerHTML = '<div class="console-line system">⚡ 流水线控制台已清空。</div>';
+    }
+    if (title) {
+      title.textContent = "空闲";
+    }
+  });
 }
 
 
 // ==================== 核心：一键执行 ====================
 async function executeAction(systemPrompt, actionName, triggerBtn) {
-  if (isProcessing) return;
-
   if (!storage.isConfigured()) {
     showConfigBanner();
     showToast("请先完成 API 配置", "warning");
@@ -223,94 +334,224 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     return;
   }
 
-  isProcessing = true;
-  currentAbortController = new AbortController();
+  const consoleSection = document.getElementById("pipeline-console-section");
+  const consoleTitle = document.getElementById("pipeline-console-title");
+  const consoleBody = document.getElementById("pipeline-console-body");
+
+  // 展示控制台面板
+  if (consoleSection) consoleSection.classList.remove("hidden");
+
+  // 触发按钮触感反馈（非灰变禁用）
   setAllActionsLoading(true, triggerBtn);
-  showInlineStatus("processing", `${actionName}中...`, true);
 
+  let segments = [];
   try {
-    const result = await ooxml.executeAndReplace(
-      async (segments, signal) => {
-        let hasShields = segments.some(s => s.refMap && s.refMap.length > 0);
-        let redLine = "";
-        if (hasShields) {
-          redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
-        }
-
-        let fullText = "";
-        if (segments.length > 1) {
-          redLine += "\n【多段落严格指令】：本次待处理的文本被切分成了多个片段，并分别使用 <p id=\"N\"> 标签包裹。你必须逐个对每个片段进行处理，并在处理后的内容外层原封不动地保留对应的 <p id=\"N\"> 和 </p> 标签包围！严禁合并段落！严禁遗漏标签！";
-          fullText = segments.map((s, i) => `<p id="${i}">\n${s.text}\n</p>`).join("\n\n");
-        } else {
-          fullText = segments[0].text;
-        }
-
-        showInlineStatus("processing", "🔗 等待云端响应...", true);
-
-        const finalPrompt = redLine ? (systemPrompt + redLine + "\n") : systemPrompt;
-        const raw = await llm.callLLMStream(finalPrompt, fullText, (delta, currentText) => {
-          let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
-          if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
-          showInlineStatus("processing", `⚡ ${displaySnippet}█`, true);
-        }, signal);
-        const cleanRaw = llm.cleanAiResponse(raw);
-
-        if (segments.length === 1) {
-          return [cleanRaw.replace(/<\/?p[^>]*>/g, '').trim()];
-        } else {
-          const aiTexts = [];
-          for (let i = 0; i < segments.length; i++) {
-            // 兼容带不带双引号或者单引号的 XML 属性
-            const regex = new RegExp(`<p\\s+id=["']?${i}["']?\\s*>([\\s\\S]*?)</p>`, 'i');
-            const match = cleanRaw.match(regex);
-            if (match) {
-              aiTexts.push(match[1].trim());
-            } else {
-              aiTexts.push("");
-            }
-          }
-          if (aiTexts.some(t => !t)) {
-            throw new Error("大模型未能遵循多段落 XML 标签分割指令，请求作废。请调整文本长度后重试。");
-          }
-          return aiTexts;
-        }
-      },
-      (type, msg, canCancel) => showInlineStatus(type, msg, canCancel),
-      currentAbortController.signal
-    );
-
-    showInlineStatus("done", `${actionName}完成`);
-  } catch (err) {
-    if (err.name === "AbortError" || err.message === "已取消") {
-      showInlineStatus("error", "用户已中止");
-    } else {
-      showInlineStatus("error", err.message);
+    // ⚡ 瞬时锁定：瞬间在 Word 中锁定并锚定该任务对应选区（约耗时 50ms）
+    segments = await ooxml.markSelection();
+    if (!segments || segments.length === 0) {
+      throw new Error("请先在 Word 中选中需要处理的文字内容");
     }
-    setTimeout(() => hideInlineStatus(), 10000); // 错误日志同样延长停留
-    // 确保清理
-    await ooxml.clearMarks();
-  } finally {
-    isProcessing = false;
-    currentAbortController = null;
-    setAllActionsLoading(false);
+  } catch (err) {
+    showToast(err.message, "error");
+    return;
   }
+
+  // 打包任务压入全局队列
+  taskCounter++;
+  const taskId = `task_${Date.now()}_${taskCounter}`;
+  const pipelineTask = {
+    id: taskId,
+    num: taskCounter,
+    actionName: actionName,
+    systemPrompt: systemPrompt,
+    segments: segments,
+    status: "pending",
+    successCount: 0
+  };
+
+  globalTaskQueue.push(pipelineTask);
+
+  // 在滚动控制台动态注入精简的单行任务项
+  if (consoleBody) {
+    // 如果已经有一些残留的等待占位符内容，将其移除
+    const placeholder = consoleBody.querySelector(".console-line.system");
+    if (placeholder && placeholder.textContent.includes("流水线已准备就绪")) {
+      placeholder.remove();
+    }
+
+    const taskLine = document.createElement("div");
+    taskLine.id = `console-task-${taskId}`;
+    taskLine.className = "console-line pending";
+    taskLine.innerHTML = `
+      <span class="task-badge">#${taskCounter}</span>
+      <span class="task-name" title="${escapeHtml(actionName)}">${escapeHtml(actionName)}</span>
+      <span class="task-progress" id="console-progress-${taskId}">⏳ 排队中 (共 ${segments.length} 段)</span>
+    `;
+
+    consoleBody.appendChild(taskLine);
+    consoleBody.scrollTop = consoleBody.scrollHeight;
+  }
+
+  showToast(`任务 #${taskCounter} [${actionName}] 已锁屏排队 ✓`, "success");
+
+  // 触发全局调度器
+  processTaskQueue();
+}
+
+/**
+ * 全局多任务异步排队调度引擎 (FIFO Queue)
+ */
+async function processTaskQueue() {
+  if (isTaskQueueRunning) return; // 调度器已在后台运行中，新点击的 Task 挂载队列尾部即可
+  isTaskQueueRunning = true;
+
+  const consoleTitle = document.getElementById("pipeline-console-title");
+  const consoleBody = document.getElementById("pipeline-console-body");
+
+  while (globalTaskQueue.length > 0) {
+    const currentTask = globalTaskQueue.shift();
+    currentTask.status = "processing";
+
+    const taskId = currentTask.id;
+    const taskLine = document.getElementById(`console-task-${taskId}`);
+    const progressSpan = document.getElementById(`console-progress-${taskId}`);
+
+    if (taskLine) {
+      taskLine.className = "console-line processing";
+    }
+
+    if (consoleTitle) consoleTitle.textContent = `任务 #${currentTask.num} 正在执行...`;
+
+    let successCount = 0;
+    currentAbortController = new AbortController();
+    const signal = currentAbortController.signal;
+    const totalSegs = currentTask.segments.length;
+
+    // 逐个处理当前 Task 下的分段
+    for (let j = 0; j < totalSegs; j++) {
+      if (signal.aborted) break;
+
+      const seg = currentTask.segments[j];
+      let retryCount = 0;
+      const retryLimit = 3;
+      let success = false;
+
+      while (retryCount < retryLimit) {
+        if (signal.aborted) break;
+
+        try {
+          if (progressSpan) {
+            if (retryCount > 0) {
+              progressSpan.textContent = `⏳ 段 ${j + 1}/${totalSegs} 重试 ${retryCount}/3...`;
+            } else {
+              progressSpan.textContent = `⚡ 段 ${j + 1}/${totalSegs} 请求云端中...`;
+            }
+            consoleBody.scrollTop = consoleBody.scrollHeight;
+          }
+
+          // 拼装红线限制提示词（防幻觉保护公式与角标）
+          let hasShields = seg.refMap && seg.refMap.length > 0;
+          let redLine = "";
+          if (hasShields) {
+            redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
+          }
+          const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
+
+          // 触发流式输出并在控制终端行渲染 delta
+          const raw = await llm.callLLMStream(finalPrompt, seg.text, (delta, currentText) => {
+            if (progressSpan && !signal.aborted) {
+              let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
+              if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
+              progressSpan.textContent = `⚡ 段 ${j + 1}/${totalSegs} 改写中: "${displaySnippet}█"`;
+            }
+          }, signal);
+
+          if (signal.aborted) throw new Error("已取消");
+
+          if (progressSpan) {
+            progressSpan.textContent = `🧩 段 ${j + 1}/${totalSegs} 恢复排版中...`;
+          }
+
+          // 调用单点 AST 还原回填
+          const cleanRaw = llm.cleanAiResponse(raw);
+          await ooxml.replaceSingleMarkedContent(cleanRaw, seg.refMap, seg.boundaryTags);
+
+          // 回填成功
+          successCount++;
+          success = true;
+          break; // 成功后跳出重试循环
+
+        } catch (err) {
+          // 中途手动取消，退场
+          if (err.name === "AbortError" || err.message === "已取消") {
+            throw err; // 抛出到最外层以跳出分段循环
+          }
+
+          retryCount++;
+          if (retryCount < retryLimit) {
+            console.warn(`段落 ${j + 1} 失败，正在进行第 ${retryCount} 次重试. 错误: ${err.message}`);
+            // 重试前避让延时 500ms，防止过载
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } else {
+            console.error(`段落 ${j + 1} 在重试 ${retryLimit} 次后依然失败. 错误: ${err.message}`);
+            // 清理当前段落的锁屏标记
+            try {
+              await Word.run(async (context) => {
+                const startCCs = context.document.contentControls.getByTag(seg.boundaryTags.start);
+                const endCCs = context.document.contentControls.getByTag(seg.boundaryTags.end);
+                startCCs.load("items");
+                endCCs.load("items");
+                await context.sync();
+                if (startCCs.items.length > 0) startCCs.items[0].delete(true);
+                if (endCCs.items.length > 0) endCCs.items[0].delete(true);
+                await context.sync();
+              });
+            } catch {}
+            // 失败 3 次后抛出异常或退出该段落，继续下一个段落
+            break;
+          }
+        }
+      }
+    }
+
+    // 更新 Task 头部为完成或中止状态
+    if (taskLine) {
+      if (signal.aborted) {
+        taskLine.className = "console-line error";
+        if (progressSpan) {
+          progressSpan.textContent = `🛑 已中止 (成功 ${successCount}/${totalSegs} 段)`;
+        }
+      } else {
+        if (successCount === totalSegs) {
+          taskLine.className = "console-line done";
+          if (progressSpan) {
+            progressSpan.textContent = `✅ 成功 (${successCount}/${totalSegs} 段)`;
+          }
+        } else {
+          taskLine.className = "console-line error";
+          if (progressSpan) {
+            progressSpan.textContent = `❌ 部分失败 (成功 ${successCount}/${totalSegs} 段)`;
+          }
+        }
+      }
+      consoleBody.scrollTop = consoleBody.scrollHeight;
+    }
+  }
+
+  if (consoleTitle) consoleTitle.textContent = "队列已清空";
+  isTaskQueueRunning = false;
+  currentAbortController = null;
 }
 
 function setAllActionsLoading(loading, activeBtn) {
-  document.querySelectorAll(".action-btn").forEach((btn) => {
-    btn.disabled = loading;
-    btn.classList.toggle("loading", loading && btn !== activeBtn);
-    if (!loading) {
-      btn.classList.remove("active-loading");
-    }
-  });
-
+  // ⚡ 彻底废除将按钮变灰禁用（disabled = true）的反模式，允许不间断多任务追加！
   if (loading && activeBtn) {
     activeBtn.classList.add("active-loading");
+    // 瞬时反馈 600ms 后自动移除加载闪烁状态
+    setTimeout(() => {
+      activeBtn.classList.remove("active-loading");
+    }, 600);
   }
-
-  const customBtn = document.getElementById("custom-run-btn");
-  if (customBtn) customBtn.disabled = loading;
 }
 
 // ==================== 内联状态条 ====================
@@ -983,6 +1224,44 @@ async function updateRefNavigator() {
     } else {
       target.value = "未找到匹配项";
       target.style.color = "var(--error)";
+    }
+
+    // ⚡ 动态诊断与打分渲染
+    const detailsContent = document.getElementById("ref-match-details-content");
+    if (detailsContent) {
+      const clean = text.replace(/[【】\[\]]/g, "");
+      const authorMatch = clean.match(/[\u4e00-\u9fff]{2,4}|[a-zA-Z\-]{2,}/);
+      const yearMatch = clean.match(/\b(19|20)\d{2}\b/);
+      const pAuthor = authorMatch ? authorMatch[0].toLowerCase() : null;
+      const pYear = yearMatch ? yearMatch[0] : null;
+
+      let html = `<div style="margin-bottom:4px; font-weight:bold; color:var(--primary);">正文提取：作者="${pAuthor || '无'}" 年份="${pYear || '无'}"</div>`;
+      
+      if (!refNavState.bibliography || refNavState.bibliography.length === 0) {
+        html += `<div style="color:var(--error); font-weight:bold;">⚠️ 侧边栏未检索到文末参考文献！请先确认文档末尾有以“参考文献”或“References”命名的标题，且下方包含完整的文献列表。</div>`;
+      } else {
+        html += refNavState.bibliography.map(entry => {
+          let score = 0;
+          let matchLog = [];
+          if (pAuthor && entry.coreAuthor === pAuthor) {
+            score += 60;
+            matchLog.push(`核心作者对齐(+60)`);
+          } else if (pAuthor && entry.text.toLowerCase().includes(pAuthor)) {
+            score += 30;
+            matchLog.push(`包含核心作者(+30)`);
+          }
+          if (pYear && entry.year === pYear) {
+            score += 40;
+            matchLog.push(`年份相同(+40)`);
+          }
+          const logStr = score > 0 ? ` [${matchLog.join(',')}]` : ' [无匹配点]';
+          return `<div style="margin-bottom:4px; border-bottom:1px dashed rgba(0,0,0,0.05); padding-bottom:2px; ${score > 0 ? 'color:#10b981; font-weight:500;' : ''}">
+            [${entry.id}] 得分: ${score}${logStr}<br/>
+            <span style="font-size:9px; opacity:0.8; color:var(--text-secondary);">文献: ${entry.text.substring(0, 45)}...</span>
+          </div>`;
+        }).join("");
+      }
+      detailsContent.innerHTML = html;
     }
   });
 }

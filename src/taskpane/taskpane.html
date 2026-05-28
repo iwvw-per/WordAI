@@ -41,6 +41,28 @@
 
     <!-- 操作页 -->
     <div id="page-actions" class="page active">
+      <!-- 极速学术快捷操作台 (快捷唤出) -->
+      <div id="quick-action-deck" class="quick-action-deck hidden">
+        <div class="deck-header">
+          <span class="deck-title">⚡ 极速学术快捷操作台</span>
+          <button class="deck-close" id="btn-close-deck" title="关闭">×</button>
+        </div>
+        <div class="deck-body">
+          <button class="deck-btn btn-polish" id="btn-deck-polish">
+            <span class="btn-icon">✨</span>
+            <span class="btn-text">AI 润色</span>
+          </button>
+          <button class="deck-btn btn-deai" id="btn-deck-deai">
+            <span class="btn-icon">🎭</span>
+            <span class="btn-text">AI 降AI</span>
+          </button>
+          <button class="deck-btn btn-cool" id="btn-deck-cool">
+            <span class="btn-icon">❄️</span>
+            <span class="btn-text">AI 降温</span>
+          </button>
+        </div>
+      </div>
+
       <section class="section">
         <div id="action-grid" class="action-grid"></div>
         <!-- 内联状态条由 JS 动态插入 -->
@@ -52,6 +74,23 @@
           <button class="btn btn-primary btn-block" id="custom-run-btn">
             <span class="btn-icon">▶</span> 执行
           </button>
+        </div>
+      </section>
+
+      <!-- 新增：批量处理队列与滚动终端控制台 -->
+      <section class="section hidden" id="pipeline-console-section" style="margin-top: 10px;">
+        <div class="pipeline-console" id="pipeline-console">
+          <div class="console-header">
+            <span class="console-dot red"></span>
+            <span class="console-dot yellow"></span>
+            <span class="console-dot green"></span>
+            <span class="console-title" id="pipeline-console-title">空闲</span>
+            <span style="flex:1"></span>
+            <button class="btn btn-xs btn-ghost" id="btn-clear-console" style="font-size:9px; padding:2px 6px; opacity:0.7;">清除</button>
+          </div>
+          <div class="console-body" id="pipeline-console-body">
+            <div class="console-line system">⚡ 流水线已准备就绪。</div>
+          </div>
         </div>
       </section>
     </div>
@@ -96,6 +135,14 @@
               <button class="btn btn-primary btn-sm" id="btn-ref-confirm" style="flex:1; padding:2px 8px;">确认替换</button>
               <button class="btn btn-ghost btn-sm" id="btn-ref-next" style="padding:2px 8px;">→</button>
             </div>
+            
+            <!-- 新增：文献打分匹配分析诊断抽屉 -->
+            <details class="compact-details" style="margin-top:6px; font-size:10px; border-top:1px dashed var(--border); padding-top:6px;" id="ref-match-details-container">
+              <summary style="cursor:pointer; color:var(--text-secondary); outline:none;">🔍 匹配打分调试详情</summary>
+              <div id="ref-match-details-content" style="padding-top:4px; max-height:110px; overflow-y:auto; color:var(--text-secondary); line-height:1.4;">
+                <!-- 动态诊断数据 -->
+              </div>
+            </details>
           </div>
 
           <button class="btn btn-ghost btn-block btn-sm" id="btn-refresh-refs" style="margin-top:4px">一键刷新编号与链接</button>
@@ -195,7 +242,7 @@
       </section>
 
       <footer class="settings-footer">
-        <p>WordAI v1.0.4</p>
+        <p>WordAI v1.0.6</p>
       </footer>
     </div>
   </div>

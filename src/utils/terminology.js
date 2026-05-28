@@ -28,26 +28,35 @@ export async function replaceTerminology(aliases, standardTerm, passedContext = 
             searchResults.load("items");
             await context.sync();
 
-            // 逐一检查，跳过公式内的匹配项
+            const tasks = [];
             for (let i = 0; i < searchResults.items.length; i++) {
                 const item = searchResults.items[i];
-                // 检查所在段落是否包含公式
                 const parentParagraph = item.paragraphs.getFirst();
                 const paraOoxml = parentParagraph.getOoxml();
-                await context.sync();
+                tasks.push({ item, parentParagraph, paraOoxml });
+            }
+            await context.sync(); // ⚡ 集中批量 sync，仅需 1 次往返即可获取所有段落的 OOXML
 
-                // 如果段落包含 oMath 公式，则需要精确判断匹配项自身是否在公式内
-                if (paraOoxml.value && (paraOoxml.value.includes("<m:oMath") || paraOoxml.value.includes("<m:oMathPara"))) {
-                    // 获取匹配项自身的 OOXML
-                    const itemOoxml = item.getOoxml();
-                    await context.sync();
-                    // 如果匹配项自身的 OOXML 包含 oMath，说明它在公式内，跳过
-                    if (itemOoxml.value && (itemOoxml.value.includes("<m:oMath") || itemOoxml.value.includes("<m:oMathPara") || itemOoxml.value.includes("<m:r"))) {
+            const needItemOoxmlTasks = [];
+            for (const task of tasks) {
+                if (task.paraOoxml.value && (task.paraOoxml.value.includes("<m:oMath") || task.paraOoxml.value.includes("<m:oMathPara"))) {
+                    const itemOoxml = task.item.getOoxml();
+                    needItemOoxmlTasks.push({ task, itemOoxml });
+                }
+            }
+            if (needItemOoxmlTasks.length > 0) {
+                await context.sync(); // ⚡ 集中批量 sync，仅当公式检测段落内有匹配项时才进行二次提取
+            }
+
+            for (const task of tasks) {
+                const matchedNeed = needItemOoxmlTasks.find(n => n.task === task);
+                if (matchedNeed) {
+                    const val = matchedNeed.itemOoxml.value;
+                    if (val && (val.includes("<m:oMath") || val.includes("<m:oMathPara") || val.includes("<m:r"))) {
                         continue;
                     }
                 }
-
-                item.insertText(standardTerm, "Replace");
+                task.item.insertText(standardTerm, "Replace");
             }
         }
         await context.sync();

@@ -527,3 +527,324 @@ select.form-input { cursor: pointer; padding-right: 20px; }
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
+
+/* ==================== Pipeline Console ==================== */
+.pipeline-console {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-header {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.console-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.console-dot.red { background: #ef4444; }
+.console-dot.yellow { background: #f59e0b; }
+.console-dot.green { background: #10b981; }
+
+.console-title {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  margin-right: 4px;
+}
+
+#btn-clear-console {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.console-body {
+  padding: 4px;
+  max-height: 110px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #09090b;
+}
+.console-body::-webkit-scrollbar { width: 2px; }
+.console-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: var(--radius-full); }
+
+.console-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.5px;
+  line-height: 1.2;
+  padding: 2px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-sans);
+}
+.console-line:hover { background: rgba(255,255,255,0.02); }
+
+.console-line.system { color: #8b5cf6; font-weight: 500; }
+.console-line.info { color: var(--text-secondary); }
+.console-line.pending { color: var(--text-muted); opacity: 0.7; }
+.console-line.processing { color: #3b82f6; font-weight: 500; animation: console-pulse 1.5s infinite; }
+.console-line.done { color: #10b981; font-weight: 500; }
+.console-line.error { color: #ef4444; font-weight: 500; }
+
+.task-badge {
+  display: inline-flex;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: #27272a;
+  color: #e4e4e7;
+  font-weight: bold;
+  font-size: 8.5px;
+  font-family: Consolas, monospace;
+  flex-shrink: 0;
+}
+
+.task-name {
+  font-weight: 600;
+  color: #fafafa;
+  flex-shrink: 0;
+  max-width: 50px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-progress {
+  color: #a1a1aa;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-line.done .task-progress {
+  color: #34d399;
+}
+
+.console-line.error .task-progress {
+  color: #f87171;
+}
+
+.console-line.processing .task-progress {
+  color: #60a5fa;
+}
+
+.console-line.pending .task-progress {
+  color: #71717a;
+}
+
+@keyframes console-pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+/* ==================== 极速学术快捷操作台 ==================== */
+.quick-action-deck {
+  background: rgba(23, 23, 27, 0.85); /* 默认暗色磨砂 */
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 10px 12px 14px 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25), inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  animation: deck-slide-down 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 浅色主题下的毛玻璃适配 */
+[data-theme="light"] .quick-action-deck {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.08), inset 0 1px 1px rgba(255, 255, 255, 0.6);
+}
+
+@keyframes deck-slide-down {
+  0% {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.deck-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.deck-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #a5b4fc, #818cf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+[data-theme="light"] .deck-title {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.deck-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.deck-close:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  transform: rotate(90deg);
+}
+
+.deck-body {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.deck-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 10px 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 按钮各自微磨砂渐变色 */
+.deck-btn.btn-polish {
+  background: rgba(245, 158, 11, 0.06);
+  border-color: rgba(245, 158, 11, 0.15);
+}
+.deck-btn.btn-polish .btn-icon {
+  color: #fbbf24;
+  text-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
+}
+.deck-btn.btn-polish:hover {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.4);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.15);
+}
+
+.deck-btn.btn-deai {
+  background: rgba(139, 92, 246, 0.06);
+  border-color: rgba(139, 92, 246, 0.15);
+}
+.deck-btn.btn-deai .btn-icon {
+  color: #a78bfa;
+  text-shadow: 0 0 8px rgba(167, 139, 250, 0.4);
+}
+.deck-btn.btn-deai:hover {
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.15);
+}
+
+.deck-btn.btn-cool {
+  background: rgba(6, 182, 212, 0.06);
+  border-color: rgba(6, 182, 212, 0.15);
+}
+.deck-btn.btn-cool .btn-icon {
+  color: #22d3ee;
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
+}
+.deck-btn.btn-cool:hover {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.4);
+  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.15);
+}
+
+/* 浅色主题按钮微调 */
+[data-theme="light"] .deck-btn {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .deck-btn.btn-polish:hover {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+[data-theme="light"] .deck-btn.btn-deai:hover {
+  background: rgba(139, 92, 246, 0.08);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+[data-theme="light"] .deck-btn.btn-cool:hover {
+  background: rgba(6, 182, 212, 0.08);
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+.deck-btn:hover {
+  transform: translateY(-2px);
+}
+
+.deck-btn .btn-icon {
+  font-size: 16px;
+  transition: transform 0.3s ease;
+}
+
+.deck-btn:hover .btn-icon {
+  transform: scale(1.2);
+}
+
+.deck-btn .btn-text {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  width: 100%;
+  text-align: center;
+}

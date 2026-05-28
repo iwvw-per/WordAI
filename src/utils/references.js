@@ -32,32 +32,73 @@ export async function parseBibliography() {
         await context.sync();
 
         const allTitleResults = [...searchChinese.items, ...searchEnglish.items];
-        const styledParagraphs = body.paragraphs;
-        styledParagraphs.load(["items"]);
-        await context.sync();
-        for (const p of styledParagraphs.items) p.load(["style", "text"]);
-        await context.sync();
-
         let bibRange = null;
         if (allTitleResults.length > 0) {
             bibRange = allTitleResults[allTitleResults.length - 1].expandTo(body.getRange("End"));
         } else {
-            const bibStartPar = styledParagraphs.items.find(p =>
-                (p.style && (p.style.toLowerCase().includes("bib") || p.style.includes("参考文献"))) ||
-                /^\[1\]|1\./.test(p.text.trim())
-            );
-            if (bibStartPar) bibRange = bibStartPar.expandTo(body.getRange("End"));
+            // ⚡ 降级策略优先：使用 search 快速锚定文献库首项 [1] 或 1.
+            const searchBracket1 = body.search("\\[1\\]", { matchWildcards: true });
+            const searchDot1 = body.search("1. ", { matchWildcards: false });
+            searchBracket1.load("items");
+            searchDot1.load("items");
+            await context.sync();
+
+            let bibStartPar = null;
+            if (searchBracket1.items.length > 0) {
+                bibStartPar = searchBracket1.items[0];
+            } else if (searchDot1.items.length > 0) {
+                bibStartPar = searchDot1.items[0];
+            }
+
+            // 万不得已作为最后后备：只扫描文档最后 200 个段落的样式，完全避免载入全身大 payload 崩溃
+            if (!bibStartPar) {
+                const styledParagraphs = body.paragraphs;
+                styledParagraphs.load("items");
+                await context.sync();
+
+                const count = styledParagraphs.items.length;
+                const checkStartIndex = Math.max(0, count - 200);
+                const subItems = styledParagraphs.items.slice(checkStartIndex);
+
+                for (const p of subItems) p.load(["style", "text"]);
+                await context.sync();
+
+                const found = subItems.find(p =>
+                    (p.style && (p.style.toLowerCase().includes("bib") || p.style.includes("参考文献"))) ||
+                    /^\[1\]|1\./.test(p.text.trim())
+                );
+                if (found) bibStartPar = found;
+            }
+
+            if (bibStartPar) {
+                bibRange = bibStartPar.expandTo(body.getRange("End"));
+            }
         }
 
-        if (!bibRange) return [];
+        if (!bibRange) {
+            console.warn("WordAI parseBibliography: bibRange is null, did not find references section start!");
+            return [];
+        }
         bibRange.load("text");
         await context.sync();
 
+        console.log("WordAI parseBibliography Range Text length:", bibRange.text.length);
+        console.log("WordAI parseBibliography Range Text:", bibRange.text);
         const lines = bibRange.text.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 8);
-        return lines.map((line, index) => {
+        console.log("WordAI parseBibliography Lines:", lines);
+        const results = lines.map((line, index) => {
             const yearMatch = line.match(/(19|20)\d{2}/);
-            return { id: index + 1, text: line, year: yearMatch ? yearMatch[0] : null };
+            const cleanText = line.replace(/^(\s*(?:[\[【]\s*\d+\s*[\]】]|\d+\s*[\.．、])\s*)/, "");
+            const authorMatch = cleanText.match(/[\u4e00-\u9fff]{2,4}|[a-zA-Z\-]{2,}/);
+            return {
+                id: index + 1,
+                text: line,
+                year: yearMatch ? yearMatch[0] : null,
+                coreAuthor: authorMatch ? authorMatch[0].toLowerCase() : null
+            };
         });
+        console.log("WordAI parseBibliography Parsed Results:", results);
+        return results;
     });
 }
 
@@ -66,16 +107,40 @@ export async function parseBibliography() {
  */
 export function matchPlaceholderToBibliography(placeholderText, bibliography) {
     const clean = placeholderText.replace(/[【】\[\]]/g, "");
-    const parts = clean.split(/[,，\s]+/).map(p => p.trim());
-    const author = parts[0];
-    const year = parts.find(p => /^\d{4}$/.test(p));
+    
+    // ⚡ 精准模糊比对：提取占位符内的核心作者（2~4个中文或2个字符以上的英文）与年份
+    const authorMatch = clean.match(/[\u4e00-\u9fff]{2,4}|[a-zA-Z\-]{2,}/);
+    const yearMatch = clean.match(/\b(19|20)\d{2}\b/);
+    
+    const pAuthor = authorMatch ? authorMatch[0].toLowerCase() : null;
+    const pYear = yearMatch ? yearMatch[0] : null;
+
+    console.log(`WordAI matchPlaceholderToBibliography: placeholder="${placeholderText}" clean="${clean}" pAuthor="${pAuthor}" pYear="${pYear}"`);
+    console.log("WordAI matchPlaceholderToBibliography bibliography list:", bibliography);
+
     const scored = bibliography.map(entry => {
         let score = 0;
-        if (author && entry.text.includes(author)) score += 50;
-        if (year && entry.year === year) score += 50;
+        
+        // 1. 如果核心作者（前2-4字）精确匹配，给极高分
+        if (pAuthor && entry.coreAuthor === pAuthor) {
+            score += 60;
+        } else if (pAuthor && entry.text.toLowerCase().includes(pAuthor)) {
+            // 2. 降级：如果整行文献包含核心作者
+            score += 30;
+        }
+        
+        // 3. 年份相同，给高分
+        if (pYear && entry.year === pYear) {
+            score += 40;
+        }
+        
+        console.log(`  --> Entry ID=${entry.id} CoreAuthor="${entry.coreAuthor}" Year="${entry.year}" -> Score=${score}`);
         return { ...entry, score };
     }).filter(e => e.score > 0);
-    return scored.sort((a, b) => b.score - a.score);
+    
+    const sorted = scored.sort((a, b) => b.score - a.score);
+    console.log("WordAI matchPlaceholderToBibliography sorted matched results:", sorted);
+    return sorted;
 }
 
 /**
