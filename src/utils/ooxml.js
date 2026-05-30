@@ -325,9 +325,12 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           if (i > 0) {
-            // 遇到换行，创建真正的物理新段落，并将 currentLoc 重新锚定在该新段落上
-            const newPara = currentLoc.insertParagraph("After", line);
-            currentLoc = newPara.getRange();
+            // 遇到换行，创建真正的物理新段落（注意：Office JS insertParagraph 参数签名是 (text, location)）
+            const newPara = currentLoc.insertParagraph("", "After");
+            currentLoc = newPara.getRange("Start");
+            if (line) {
+              currentLoc = currentLoc.insertText(line, "After");
+            }
           } else {
             // 首行文本，直接在当前位置链式追加
             if (line) {
