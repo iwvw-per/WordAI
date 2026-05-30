@@ -320,7 +320,21 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
     let currentLoc = startCC.getRange("After");
     for (const part of parts) {
       if (part.type === "text") {
-        currentLoc = currentLoc.insertText(part.val, "After");
+        const normalizedText = part.val.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        const lines = normalizedText.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (i > 0) {
+            // 遇到换行，创建真正的物理新段落，并将 currentLoc 重新锚定在该新段落上
+            const newPara = currentLoc.insertParagraph("After", line);
+            currentLoc = newPara.getRange();
+          } else {
+            // 首行文本，直接在当前位置链式追加
+            if (line) {
+              currentLoc = currentLoc.insertText(line, "After");
+            }
+          }
+        }
       } else if (part.type === "ref") {
         const mapItem = refMap.find((m) => m.id === part.id);
         if (mapItem) {

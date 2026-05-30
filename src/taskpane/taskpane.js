@@ -456,10 +456,14 @@ async function runSingleTaskAsync(currentTask) {
       if (hasShields) {
         redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
       }
+      // 强力注入段落保留约束，保障段落不被大模型合并
+      redLine += "\n\n【段落结构绝对保留】：输入的文本可能包含多个自然段（段落之间通过换行符 \\n 分隔）。你必须原封不动地保持这些段落结构。改写后的文本必须拥有与输入文本完全一致的段落数量和换行分隔，严禁将多段合并为一段，也严禁自行切分或增加额外的段落！请严格输出带换行符 \\n 的多段内容。";
+
       const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
+      const normalizedInputText = seg.text.replace(/\r/g, "\n");
 
       // 触发流式输出并在控制终端行渲染 delta
-      const raw = await llm.callLLMStream(finalPrompt, seg.text, (delta, currentText) => {
+      const raw = await llm.callLLMStream(finalPrompt, normalizedInputText, (delta, currentText) => {
         if (progressSpan && !signal.aborted) {
           let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
           if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
