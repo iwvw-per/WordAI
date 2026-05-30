@@ -291,6 +291,30 @@ function parseAiResult(text, refMap) {
   return { parts, placedIds };
 }
 
+function splitPartsIntoParagraphs(parts) {
+  const paras = [];
+  let currentPara = [];
+
+  for (const part of parts) {
+    if (part.type === "text") {
+      const normalizedText = part.val.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const lines = normalizedText.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i > 0) {
+          paras.push(currentPara);
+          currentPara = [];
+        }
+        currentPara.push({ type: "text", val: line });
+      }
+    } else if (part.type === "ref") {
+      currentPara.push(part);
+    }
+  }
+  paras.push(currentPara);
+  return paras;
+}
+
 /**
  * 替换标记内容并恢复引用
  */
@@ -307,42 +331,64 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
       return;
     }
 
-    // 1. 在内存中将大模型结果拆解为 AST 节点
+    // 1. 在内存中将大模型结果拆解为 AST 节点，并按段落进行划分子树
     const { parts, placedIds } = parseAiResult(aiResult, refMap);
+    const parasAST = splitPartsIntoParagraphs(parts);
 
-    // 2. 清空原本的旧文本
+    // 2. 加载选区内的所有原有物理段落，以便后续复用与精确排版
     const targetRange = startCC
       .getRange("After")
       .expandTo(endCC.getRange("Before"));
-    targetRange.clear();
+    const existingParas = targetRange.paragraphs;
+    existingParas.load("items");
+    await context.sync();
 
-    // 3. 链式组装新文本与引用的原始 OOXML
-    let currentLoc = startCC.getRange("After");
-    for (const part of parts) {
-      if (part.type === "text") {
-        const normalizedText = part.val.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        const lines = normalizedText.split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (i > 0) {
-            // 遇到换行，创建真正的物理新段落（注意：Office JS insertParagraph 参数签名是 (text, location)）
-            const newPara = currentLoc.insertParagraph("", "After");
-            currentLoc = newPara.getRange("Start");
-            if (line) {
-              currentLoc = currentLoc.insertText(line, "After");
-            }
-          } else {
-            // 首行文本，直接在当前位置链式追加
-            if (line) {
-              currentLoc = currentLoc.insertText(line, "After");
-            }
+    // 3. 清空原本的旧文本（内容清空，残留的物理空壳会被自动复用或清除）
+    targetRange.clear();
+    await context.sync();
+
+    // 4. 复用原有物理段落或在后面创建新段落来承载改写后的段落 AST
+    const totalExisting = existingParas.items.length;
+    const totalNew = parasAST.length;
+    const paragraphRefs = [];
+
+    for (let k = 0; k < totalNew; k++) {
+      const paraAST = parasAST[k];
+      let pRange = null;
+
+      if (k < totalExisting) {
+        // 复用原有段落空壳，绝不把空行往后推
+        const currentPara = existingParas.items[k];
+        paragraphRefs.push(currentPara);
+        pRange = currentPara.getRange();
+      } else {
+        // 大模型改写后的段落多于原本段落，在最后一个已写完的物理段落后面新建物理段落
+        const prevPara = paragraphRefs[paragraphRefs.length - 1];
+        const newPara = prevPara.insertParagraph("", "After");
+        paragraphRefs.push(newPara);
+        pRange = newPara.getRange();
+      }
+
+      // 在该物理段落内部，链式回写属于本段落的所有文本和引文
+      let currentLoc = pRange.getRange("Start");
+      for (const part of paraAST) {
+        if (part.type === "text") {
+          if (part.val) {
+            currentLoc = currentLoc.insertText(part.val, "After");
+          }
+        } else if (part.type === "ref") {
+          const mapItem = refMap.find((m) => m.id === part.id);
+          if (mapItem) {
+            currentLoc = currentLoc.insertOoxml(mapItem.originalXml, "After");
           }
         }
-      } else if (part.type === "ref") {
-        const mapItem = refMap.find((m) => m.id === part.id);
-        if (mapItem) {
-          currentLoc = currentLoc.insertOoxml(mapItem.originalXml, "After");
-        }
+      }
+    }
+
+    // 5. 如果大模型改写后的段落少于原本的段落，物理删除后部多余残留的空壳段落以彻底抹除空行！
+    if (totalNew < totalExisting) {
+      for (let k = totalNew; k < totalExisting; k++) {
+        existingParas.items[k].delete();
       }
     }
 
