@@ -135,103 +135,126 @@ export async function markSelection() {
 
       if (validParagraphs.length === 0) return;
 
-      // 4. 将整个合法段落集合包装为唯一一个整体 Task
+      // 4. 将提取的自然段并行标记 CC 并准备扫描引文、公式与脚注
+      const searchTasks = [];
       const session = Date.now() + "_" + Math.floor(Math.random() * 100);
-      const startCC = validParagraphs[0].getRange("Start").insertContentControl();
-      startCC.tag = `${BOU_START}_${session}_0`;
-      startCC.appearance = "Hidden";
-      
-      const endCC = validParagraphs[validParagraphs.length - 1].getRange("End").insertContentControl();
-      endCC.tag = `${BOU_END}_${session}_0`;
-      endCC.appearance = "Hidden";
+
+      for (const p of validParagraphs) {
+        const startCC = p.getRange("Start").insertContentControl();
+        startCC.tag = `${BOU_START}_${session}_${globalCounter}`;
+        startCC.appearance = "Hidden";
+        const endCC = p.getRange("End").insertContentControl();
+        endCC.tag = `${BOU_END}_${session}_${globalCounter++}`;
+        endCC.appearance = "Hidden";
+
+        const refMatches = p.search("\\[[0-9\\- ,]@\\]", {
+          matchWildcards: true,
+        });
+        refMatches.load("items");
+
+        let eqns = null;
+        if (p.equations) {
+          eqns = p.equations;
+          eqns.load("items");
+        }
+
+        let footnotes = null;
+        if (
+          Office.context.requirements.isSetSupported("WordApi", "1.5") &&
+          p.footnotes
+        ) {
+          footnotes = p.footnotes;
+          footnotes.load("items/reference");
+        }
+
+        searchTasks.push({
+          paragraph: p,
+          refMatches,
+          eqns,
+          footnotes,
+          boundaryTags: { start: startCC.tag, end: endCC.tag },
+          startCC,
+          endCC,
+        });
+      }
       await context.sync();
 
-      const totalRange = startCC.getRange("After").expandTo(endCC.getRange("Before"));
-
-      // 批量搜索引文、公式与脚注
-      const refMatches = totalRange.search("\\[[0-9\\- ,]@\\]", {
-        matchWildcards: true,
-      });
-      refMatches.load("items");
-
-      let eqns = null;
-      if (totalRange.equations) {
-        eqns = totalRange.equations;
-        eqns.load("items");
-      }
-
-      let footnotes = null;
-      if (
-        Office.context.requirements.isSetSupported("WordApi", "1.5") &&
-        totalRange.footnotes
-      ) {
-        footnotes = totalRange.footnotes;
-        footnotes.load("items/reference");
-      }
-      await context.sync();
-
-      // 批量搜集并加载 OOXML
-      const itemsToShield = [];
-      if (refMatches.items) {
-        for (const m of refMatches.items) {
-          itemsToShield.push({
-            range: m,
-            type: "REF",
-            xml: m.getOoxml(),
-          });
-        }
-      }
-      if (eqns && eqns.items) {
-        for (const eq of eqns.items) {
-          itemsToShield.push({
-            range: eq,
-            type: "EQN",
-            xml: eq.getOoxml(),
-          });
-        }
-      }
-      if (footnotes && footnotes.items) {
-        for (const fn of footnotes.items) {
-          if (fn.reference) {
-            itemsToShield.push({
-              range: fn.reference,
-              type: "FNOTE",
-              xml: fn.reference.getOoxml(),
+      // 5. 批量加载 OOXML 格式数据
+      for (const task of searchTasks) {
+        task.itemsToShield = [];
+        if (task.refMatches.items) {
+          for (const m of task.refMatches.items) {
+            task.itemsToShield.push({
+              range: m,
+              type: "REF",
+              xml: m.getOoxml(),
             });
+          }
+        }
+        if (task.eqns && task.eqns.items) {
+          for (const eq of task.eqns.items) {
+            task.itemsToShield.push({
+              range: eq,
+              type: "EQN",
+              xml: eq.getOoxml(),
+            });
+          }
+        }
+        if (task.footnotes && task.footnotes.items) {
+          for (const fn of task.footnotes.items) {
+            if (fn.reference) {
+              task.itemsToShield.push({
+                range: fn.reference,
+                type: "FNOTE",
+                xml: fn.reference.getOoxml(),
+              });
+            }
           }
         }
       }
       await context.sync();
 
-      // 逆序进行 ContentControl 标记保护
-      const shieldMap = [];
-      for (let i = itemsToShield.length - 1; i >= 0; i--) {
-        const item = itemsToShield[i];
-        const uid = globalCounter++;
-        const token = `[${item.type}_${uid}]`;
+      // 6. 逆序对引文进行遮罩替换，并记载遮罩映射表
+      const rangeListToLoad = [];
+      for (const task of searchTasks) {
+        const shieldMap = [];
+        const allItems = [...task.itemsToShield];
 
-        const cc = item.range.insertContentControl();
-        cc.tag = `${SHIELD_PREFIX}${uid}`;
-        cc.appearance = "Hidden";
-        cc.insertText(token, "Replace");
+        for (let i = allItems.length - 1; i >= 0; i--) {
+          const item = allItems[i];
+          const uid = globalCounter++;
+          const token = `[${item.type}_${uid}]`;
 
-        shieldMap.push({
-          placeholder: token,
-          id: uid,
-          originalXml: item.xml.value,
+          const cc = item.range.insertContentControl();
+          cc.tag = `${SHIELD_PREFIX}${uid}`;
+          cc.appearance = "Hidden";
+          cc.insertText(token, "Replace");
+
+          shieldMap.push({
+            placeholder: token,
+            id: uid,
+            originalXml: item.xml.value,
+          });
+        }
+
+        const newRange = task.startCC
+          .getRange("After")
+          .expandTo(task.endCC.getRange("Before"));
+        newRange.load("text");
+        
+        finalItems.push({
+          textObj: newRange,
+          refMap: shieldMap,
+          boundaryTags: task.boundaryTags,
         });
       }
       await context.sync();
 
-      // 重新读取带有遮罩后的整体 Range 文本
-      totalRange.load("text");
-      await context.sync();
-
-      finalItems.push({
-        text: totalRange.text,
-        refMap: shieldMap,
-        boundaryTags: { start: startCC.tag, end: endCC.tag },
-      });
+      // 7. 正式取得带遮罩后的各物理段落文本内容
+      for (const item of finalItems) {
+        item.text = item.textObj.text;
+        delete item.textObj;
+      }
     });
   } catch (err) {
     console.error("markSelection Error:", err);
@@ -291,29 +314,6 @@ function parseAiResult(text, refMap) {
   return { parts, placedIds };
 }
 
-function splitPartsIntoParagraphs(parts) {
-  const paras = [];
-  let currentPara = [];
-
-  for (const part of parts) {
-    if (part.type === "text") {
-      const normalizedText = part.val.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-      const lines = normalizedText.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (i > 0) {
-          paras.push(currentPara);
-          currentPara = [];
-        }
-        currentPara.push({ type: "text", val: line });
-      }
-    } else if (part.type === "ref") {
-      currentPara.push(part);
-    }
-  }
-  paras.push(currentPara);
-  return paras;
-}
 
 /**
  * 替换标记内容并恢复引用
@@ -331,74 +331,53 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
       return;
     }
 
-    // 1. 在内存中将大模型结果拆解为 AST 节点，并按段落进行划分子树
+    // 1. 在内存中将大模型结果拆解为 AST 节点
     const { parts, placedIds } = parseAiResult(aiResult, refMap);
-    const parasAST = splitPartsIntoParagraphs(parts);
 
-    // 2. 加载选区内的所有原有物理段落，以便后续复用与精确排版
+    // 2. 检查并开启 Word 宿主的跟踪修订模式以显示红线对比
+    const diffMode = storage.getDiffMode();
+    let originalTrackingMode = "Off";
+    if (diffMode && Office.context.requirements.isSetSupported("WordApi", "1.4")) {
+      context.document.load("changeTrackingMode");
+      await context.sync();
+      originalTrackingMode = context.document.changeTrackingMode;
+      context.document.changeTrackingMode = "TrackAll";
+    }
+
+    // 3. 清空原本的旧文本
     const targetRange = startCC
       .getRange("After")
       .expandTo(endCC.getRange("Before"));
-    const existingParas = targetRange.paragraphs;
-    existingParas.load("items");
-    await context.sync();
-
-    // 3. 清空原本的旧文本（内容清空，残留的物理空壳会被自动复用或清除）
     targetRange.clear();
-    await context.sync();
 
-    // 4. 复用原有物理段落或在后面创建新段落来承载改写后的段落 AST
-    const totalExisting = existingParas.items.length;
-    const totalNew = parasAST.length;
-    const paragraphRefs = [];
-
-    for (let k = 0; k < totalNew; k++) {
-      const paraAST = parasAST[k];
-      let pRange = null;
-
-      if (k < totalExisting) {
-        // 复用原有段落空壳，绝不把空行往后推
-        const currentPara = existingParas.items[k];
-        paragraphRefs.push(currentPara);
-        pRange = currentPara.getRange();
-      } else {
-        // 大模型改写后的段落多于原本段落，在最后一个已写完的物理段落后面新建物理段落
-        const prevPara = paragraphRefs[paragraphRefs.length - 1];
-        const newPara = prevPara.insertParagraph("", "After");
-        paragraphRefs.push(newPara);
-        pRange = newPara.getRange();
-      }
-
-      // 在该物理段落内部，链式回写属于本段落的所有文本和引文
-      let currentLoc = pRange.getRange("Start");
-      for (const part of paraAST) {
-        if (part.type === "text") {
-          if (part.val) {
-            currentLoc = currentLoc.insertText(part.val, "After");
-          }
-        } else if (part.type === "ref") {
-          const mapItem = refMap.find((m) => m.id === part.id);
-          if (mapItem) {
-            currentLoc = currentLoc.insertOoxml(mapItem.originalXml, "After");
-          }
+    // 4. 链式组装新文本与引用的原始 OOXML
+    let currentLoc = startCC.getRange("After");
+    for (const part of parts) {
+      if (part.type === "text") {
+        if (part.val) {
+          currentLoc = currentLoc.insertText(part.val, "After");
+        }
+      } else if (part.type === "ref") {
+        const mapItem = refMap.find((m) => m.id === part.id);
+        if (mapItem) {
+          currentLoc = currentLoc.insertOoxml(mapItem.originalXml, "After");
         }
       }
     }
 
-    // 5. 如果大模型改写后的段落少于原本的段落，物理删除后部多余残留的空壳段落以彻底抹除空行！
-    if (totalNew < totalExisting) {
-      for (let k = totalNew; k < totalExisting; k++) {
-        existingParas.items[k].delete();
-      }
-    }
-
-    // 4. 强行恢复被 AI 删掉的孤儿引用
+    // 5. 强行恢复被 AI 删掉的孤儿引用
     const orphans = refMap.filter((m) => !placedIds.has(m.id));
     for (const o of orphans) {
       currentLoc = currentLoc.insertOoxml(o.originalXml, "After");
     }
 
     await context.sync();
+
+    // 6. 回写完毕，恢复 Word 原本的修订跟踪状态
+    if (diffMode && Office.context.requirements.isSetSupported("WordApi", "1.4")) {
+      context.document.changeTrackingMode = originalTrackingMode;
+      await context.sync();
+    }
 
     // 5. 强力擦除 AI 幻觉产生的假占位符（所有真的已经被还原为 XML，剩下的全是捏造出的纯文本垃圾）
     try {

@@ -431,7 +431,7 @@ async function runSingleTaskAsync(currentTask) {
 
   currentTask.abortController = new AbortController();
   const signal = currentTask.abortController.signal;
-  const seg = currentTask.segments[0]; // 整块化改写，必然只有 1 段
+  const segments = currentTask.segments; // 获取所有选中的自然段
 
   let retryCount = 0;
   const retryLimit = 3;
@@ -450,17 +450,32 @@ async function runSingleTaskAsync(currentTask) {
         if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
       }
 
-      // 拼装红线限制提示词
-      let hasShields = seg.refMap && seg.refMap.length > 0;
+      // 1. 拼接带段落隔离标签的发送大文本
+      let normalizedInputText = "";
+      let hasShields = false;
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        if (seg.refMap && seg.refMap.length > 0) {
+          hasShields = true;
+        }
+        const textClean = seg.text.replace(/\r/g, "\n");
+        normalizedInputText += `<p id="${i}">${textClean}</p>\n`;
+      }
+
+      // 2. 拼装红线限制提示词
       let redLine = "";
       if (hasShields) {
         redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
       }
-      // 强力注入段落保留约束，保障段落不被大模型合并
-      redLine += "\n\n【段落结构绝对保留】：输入的文本可能包含多个自然段（段落之间通过换行符 \\n 分隔）。你必须原封不动地保持这些段落结构。改写后的文本必须拥有与输入文本完全一致的段落数量和换行分隔，严禁将多段合并为一段，也严禁自行切分或增加额外的段落！请严格输出带换行符 \\n 的多段内容。";
+      // 强力注入段落隔离协议，约束大模型输出
+      redLine += "\n\n【段落标签绝对保留红线】：";
+      redLine += "\n1. 输入的文本由多个由 <p id=\"N\">...</p> 包裹的自然段组成，各个段落的物理顺序非常关键。";
+      redLine += "\n2. 你必须对每个段落 <p id=\"N\"> 内部的文本进行独立的润色或修改。";
+      redLine += "\n3. 你必须原封不动地返回所有的段落外层 HTML 标签（即 <p id=\"N\"> 和 </p>），原封不动地保留其原有的 id 编号和原有的段落物理顺序。";
+      redLine += "\n4. 严禁将多个标签内的文本合并到同一个段落里，严禁增减、拆分或删除任何标签！";
+      redLine += "\n5. 请严格输出如下格式的内容：<p id=\"0\">第一段修改后文本</p>\\n<p id=\"1\">第二段修改后文本</p>";
 
       const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
-      const normalizedInputText = seg.text.replace(/\r/g, "\n");
 
       // 触发流式输出并在控制终端行渲染 delta
       const raw = await llm.callLLMStream(finalPrompt, normalizedInputText, (delta, currentText) => {
@@ -477,9 +492,33 @@ async function runSingleTaskAsync(currentTask) {
         progressSpan.textContent = `🧩 恢复排版中...`;
       }
 
-      // 调用单点 AST 还原回填
+      // 3. 解析大模型返回的标签隔离子串
       const cleanRaw = llm.cleanAiResponse(raw);
-      await ooxml.replaceSingleMarkedContent(cleanRaw, seg.refMap, seg.boundaryTags);
+      const parsedTexts = [];
+      const regex = /<p\s+id="(\d+)">([\s\S]*?)<\/p>/gi;
+      let match;
+      while ((match = regex.exec(cleanRaw)) !== null) {
+        const id = parseInt(match[1]);
+        const val = match[2].trim();
+        parsedTexts[id] = val;
+      }
+
+      // 双重防抱死保底机制：如果大模型漏标，就降级为回车切分
+      if (parsedTexts.filter(t => t !== undefined).length === 0) {
+        const backupLines = cleanRaw.split("\n").filter(l => l.trim() !== "");
+        for (let i = 0; i < segments.length; i++) {
+          parsedTexts[i] = backupLines[i] || "";
+        }
+      }
+
+      // 4. 精准逐个段落回填！各段落各回各家，100% 保持 Word 原生物理段落样式！
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const aiText = parsedTexts[i] || seg.text; // 保底，无此段改写就写回原文
+        if (aiText) {
+          await ooxml.replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags);
+        }
+      }
 
       success = true;
       break; // 成功后跳出重试循环
@@ -498,13 +537,15 @@ async function runSingleTaskAsync(currentTask) {
         // 彻底失败清理边界标记
         try {
           await Word.run(async (context) => {
-            const startCCs = context.document.contentControls.getByTag(seg.boundaryTags.start);
-            const endCCs = context.document.contentControls.getByTag(seg.boundaryTags.end);
-            startCCs.load("items");
-            endCCs.load("items");
-            await context.sync();
-            if (startCCs.items.length > 0) startCCs.items[0].delete(true);
-            if (endCCs.items.length > 0) endCCs.items[0].delete(true);
+            for (const seg of segments) {
+              const startCCs = context.document.contentControls.getByTag(seg.boundaryTags.start);
+              const endCCs = context.document.contentControls.getByTag(seg.boundaryTags.end);
+              startCCs.load("items");
+              endCCs.load("items");
+              await context.sync();
+              if (startCCs.items.length > 0) startCCs.items[0].delete(true);
+              if (endCCs.items.length > 0) endCCs.items[0].delete(true);
+            }
             await context.sync();
           });
         } catch {}
