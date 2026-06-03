@@ -537,6 +537,7 @@ select.form-input { cursor: pointer; padding-right: 20px; }
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  max-height: 160px; /* 限制整体控制台最高为 160px */
 }
 
 .console-header {
@@ -579,12 +580,13 @@ select.form-input { cursor: pointer; padding-right: 20px; }
 
 .console-body {
   padding: 4px;
-  max-height: 110px;
+  max-height: 120px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
   background: #09090b;
+  flex-shrink: 0;
 }
 .console-body::-webkit-scrollbar { width: 2px; }
 .console-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: var(--radius-full); }

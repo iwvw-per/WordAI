@@ -33,7 +33,8 @@ export async function fetchModels() {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`获取模型列表失败 (${response.status}): ${errorText}`);
+      const truncated = errorText.length > 150 ? errorText.substring(0, 150) + "..." : errorText;
+      throw new Error(`获取模型列表失败 (${response.status}): ${truncated}`);
     }
 
     const data = await response.json();
@@ -118,7 +119,8 @@ export async function callLLM(systemPrompt, userContent, signal) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`API 调用失败 (${response.status}): ${errorText}`);
+      const truncated = errorText.length > 150 ? errorText.substring(0, 150) + "..." : errorText;
+      throw new Error(`API 调用失败 (${response.status}): ${truncated}`);
     }
 
     const data = await response.json();
@@ -195,7 +197,8 @@ export async function callLLMStream(systemPrompt, userContent, onChunk, signal) 
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`API 调用失败 (${response.status}): ${errorText}`);
+      const truncated = errorText.length > 150 ? errorText.substring(0, 150) + "..." : errorText;
+      throw new Error(`API 调用失败 (${response.status}): ${truncated}`);
     }
 
     const reader = response.body.getReader();

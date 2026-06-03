@@ -55,11 +55,15 @@ export async function markSelection() {
         ps.load("items");
         await context.sync();
 
+        const ooxmlPromises = [];
         for (const p of ps.items) {
           p.load(["text", "style"]);
           if (skipRules.images) {
             p.inlinePictures.load("items");
           }
+          // 始终加载 OOXML 以进行公式自动探测和跳过保护
+          const ooxmlObj = p.getOoxml();
+          ooxmlPromises.push({ paragraph: p, ooxmlObj });
         }
         await context.sync();
 
@@ -71,18 +75,8 @@ export async function markSelection() {
         }
 
         let paraOoxmlMap = new Map();
-        if (skipRules.formulas) {
-          const ooxmlPromises = [];
-          for (const p of ps.items) {
-            const t = p.text.trim();
-            if (!t) continue;
-            const ooxmlObj = p.getOoxml();
-            ooxmlPromises.push({ paragraph: p, ooxmlObj });
-          }
-          await context.sync();
-          for (const { paragraph, ooxmlObj } of ooxmlPromises) {
-            paraOoxmlMap.set(paragraph, ooxmlObj.value);
-          }
+        for (const { paragraph, ooxmlObj } of ooxmlPromises) {
+          paraOoxmlMap.set(paragraph, ooxmlObj.value);
         }
 
         for (const p of ps.items) {
@@ -98,13 +92,13 @@ export async function markSelection() {
           if (skipRules.tables && !p.parentTableOrNullObject.isNullObject)
             continue;
 
-          if (skipRules.formulas) {
-            const xml = paraOoxmlMap.get(p);
-            if (
-              xml &&
-              (xml.includes("<m:oMath") || xml.includes("<m:oMathPara"))
-            )
-              continue;
+          // 强制保护：只要包含公式标签就跳过润色以防止损坏
+          const xml = paraOoxmlMap.get(p);
+          if (
+            xml &&
+            (xml.includes("<m:oMath") || xml.includes("<m:oMathPara"))
+          ) {
+            continue;
           }
 
           if (
@@ -152,12 +146,6 @@ export async function markSelection() {
         });
         refMatches.load("items");
 
-        let eqns = null;
-        if (p.equations) {
-          eqns = p.equations;
-          eqns.load("items");
-        }
-
         let footnotes = null;
         if (
           Office.context.requirements.isSetSupported("WordApi", "1.5") &&
@@ -170,7 +158,6 @@ export async function markSelection() {
         searchTasks.push({
           paragraph: p,
           refMatches,
-          eqns,
           footnotes,
           boundaryTags: { start: startCC.tag, end: endCC.tag },
           startCC,
@@ -188,15 +175,6 @@ export async function markSelection() {
               range: m,
               type: "REF",
               xml: m.getOoxml(),
-            });
-          }
-        }
-        if (task.eqns && task.eqns.items) {
-          for (const eq of task.eqns.items) {
-            task.itemsToShield.push({
-              range: eq,
-              type: "EQN",
-              xml: eq.getOoxml(),
             });
           }
         }
@@ -283,7 +261,9 @@ export async function autoRelinkRange(range) {
       }
     }
     await range.context.sync();
-  } catch (e) {}
+  } catch (e) {
+    console.warn("自动重连文献/脚注超链接失败:", e);
+  }
 }
 
 function parseAiResult(text, refMap) {
@@ -409,7 +389,9 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
         }
       }
       await context.sync();
-    } catch (e) {}
+    } catch (e) {
+      console.warn("擦除幻觉生成的假占位符标记失败:", e);
+    }
 
     // 最终自愈：在具有孤儿和新插入内容扩展后的完整段落范围内扫描
     // 【关键修复】必须在删除 startCC 和 endCC 之前获取并操作它们！

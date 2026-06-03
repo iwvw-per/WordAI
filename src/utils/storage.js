@@ -172,7 +172,8 @@ export function getEndpoint() {
  * 设置 API 端点
  */
 export function setEndpoint(endpoint) {
-  localStorage.setItem(STORAGE_KEYS.API_ENDPOINT, endpoint.replace(/\/+$/, ""));
+  const cleanUrl = (endpoint || "").trim();
+  localStorage.setItem(STORAGE_KEYS.API_ENDPOINT, cleanUrl.replace(/\/+$/, ""));
 }
 
 /**

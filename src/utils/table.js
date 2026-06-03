@@ -7,6 +7,8 @@
  */
 async function detectHeaderRowsInternal(table, context) {
     table.load(["rowCount", "columnCount"]);
+    const rows = table.rows;
+    rows.load("items");
     await context.sync();
 
     const totalCols = table.columnCount;
@@ -14,7 +16,7 @@ async function detectHeaderRowsInternal(table, context) {
 
     const rowsToCheck = Math.min(table.rowCount, 3);
     for (let i = 0; i < rowsToCheck; i++) {
-        const row = table.rows.items[i];
+        const row = rows.items[i];
         row.load("cellCount");
     }
     await context.sync();

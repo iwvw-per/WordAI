@@ -39,10 +39,14 @@ let refNavState = {
 };
 
 // ==================== 初始化 ====================
-Office.onReady((info) => {
-  isOfficeReady = true;
-  initApp();
-});
+if (typeof Office !== "undefined") {
+  Office.onReady((info) => {
+    isOfficeReady = true;
+    initApp();
+  });
+} else {
+  console.warn("Office.js 未加载，插件以独立模式运行");
+}
 
 // Fallback：3 秒后兜底初始化 UI
 document.addEventListener("DOMContentLoaded", () => {
@@ -184,14 +188,23 @@ function initTheme() {
     if (btn) btn.textContent = "🌓";
   }
 
-  // 监听系统主题变化（仅在用户未手动选择主题时跟随系统）
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    // 仅在用户未手动设置主题时才跟随系统变化
+  // 监听系统主题变化（仅在用户未手动选择主题时跟随系统，兼容旧内核）
+  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const handleThemeChange = () => {
     const userTheme = localStorage.getItem("wordai_theme");
     if (!userTheme) {
       applyAutoTheme();
     }
-  });
+  };
+  try {
+    mediaQuery.addEventListener("change", handleThemeChange);
+  } catch (e) {
+    try {
+      mediaQuery.addListener(handleThemeChange);
+    } catch (err) {
+      console.warn("当前浏览器内核不支持系统主题变化监听", err);
+    }
+  }
 
   // 注意：Office.EventType.OfficeThemeChanged 仅支持 Outlook，Word 不支持，已移除
 }
@@ -507,7 +520,8 @@ async function runSingleTaskAsync(currentTask) {
       if (parsedTexts.filter(t => t !== undefined).length === 0) {
         const backupLines = cleanRaw.split("\n").filter(l => l.trim() !== "");
         for (let i = 0; i < segments.length; i++) {
-          parsedTexts[i] = backupLines[i] || "";
+          // ⚠️ 关键修复：当大模型输出段落少于原文时，使用原文保底（segments[i].text），防止末尾段落被覆盖清空！
+          parsedTexts[i] = backupLines[i] !== undefined ? backupLines[i] : segments[i].text;
         }
       }
 
