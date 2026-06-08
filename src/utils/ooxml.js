@@ -266,7 +266,7 @@ export async function autoRelinkRange(range) {
   }
 }
 
-function parseAiResult(text, refMap) {
+export function parseAiResult(text, refMap) {
   // 升级正则，同时支持 REF, EQN 和 FNOTE 占位符
   const regex = /[\[【「『](REF|EQN|FNOTE)_(\d+)[\]】」』]/g;
   const parts = [];

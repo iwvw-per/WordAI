@@ -1,11 +1,28 @@
 import * as llm from "./llm.js";
+import * as storage from "./storage.js";
+import { redactSensitiveText, restoreSensitiveText } from "./privacy.js";
 
 /**
  * 扫描文本并提取术语及冲突
  */
 export async function extractTerminology(text) {
-    const prompt = `请从以下学术文本中提取核心术语冲突。返回 JSON 数组格式: [{"standard": "标准术语", "aliases": ["别名1"]}]。无冲突返回 []。`;
-    const result = await llm.callLLM(prompt, text);
+    let prompt = `请从以下学术文本中提取核心术语冲突。返回 JSON 数组格式: [{"standard": "标准术语", "aliases": ["别名1"]}]。无冲突返回 []。`;
+    let llmInput = text;
+    let replacements = [];
+
+    if (storage.getPrivacyMode()) {
+        const privacyContext = redactSensitiveText(text);
+        llmInput = privacyContext.text;
+        replacements = privacyContext.replacements;
+        if (replacements.length > 0) {
+            prompt += "\n\n文中的 [[WAI_SECRET_N]] 是用户隐私占位符，必须原样保留，不要解释、翻译、拆分或改写。";
+        }
+    }
+
+    const result = restoreSensitiveText(
+        await llm.callLLM(prompt, llmInput, undefined, { model: storage.getRoutedModel("term") }),
+        replacements,
+    );
     try {
         let jsonStr = result.trim().replace(/^```json\n?|\n?```$/gi, "");
         const arrayMatch = jsonStr.match(/[\s\S]*\]/);

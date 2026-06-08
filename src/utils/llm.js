@@ -75,10 +75,10 @@ export async function fetchModels() {
  * @param {AbortSignal} signal - 取消信号
  * @returns {Promise<string>} 处理后的文字
  */
-export async function callLLM(systemPrompt, userContent, signal) {
+export async function callLLM(systemPrompt, userContent, signal, options = {}) {
   const endpoint = getEndpoint();
   const apiKey = getApiKey();
-  const model = getModel();
+  const model = options.model || getModel();
   const temperature = getTemperature();
 
   if (!endpoint || !apiKey || !model) {
@@ -148,10 +148,10 @@ export async function callLLM(systemPrompt, userContent, signal) {
  * @param {AbortSignal} signal - 取消信号
  * @returns {Promise<string>} 完整的处理后文字
  */
-export async function callLLMStream(systemPrompt, userContent, onChunk, signal) {
+export async function callLLMStream(systemPrompt, userContent, onChunk, signal, options = {}) {
   const endpoint = getEndpoint();
   const apiKey = getApiKey();
-  const model = getModel();
+  const model = options.model || getModel();
   const temperature = getTemperature();
 
   if (!endpoint || !apiKey || !model) {

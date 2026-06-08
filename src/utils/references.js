@@ -82,10 +82,7 @@ export async function parseBibliography() {
         bibRange.load("text");
         await context.sync();
 
-        console.log("WordAI parseBibliography Range Text length:", bibRange.text.length);
-        console.log("WordAI parseBibliography Range Text:", bibRange.text);
         const lines = bibRange.text.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 8);
-        console.log("WordAI parseBibliography Lines:", lines);
         const results = lines.map((line, index) => {
             const yearMatch = line.match(/(19|20)\d{2}/);
             const cleanText = line.replace(/^(\s*(?:[\[【]\s*\d+\s*[\]】]|\d+\s*[\.．、])\s*)/, "");
@@ -97,7 +94,6 @@ export async function parseBibliography() {
                 coreAuthor: authorMatch ? authorMatch[0].toLowerCase() : null
             };
         });
-        console.log("WordAI parseBibliography Parsed Results:", results);
         return results;
     });
 }
@@ -115,9 +111,6 @@ export function matchPlaceholderToBibliography(placeholderText, bibliography) {
     const pAuthor = authorMatch ? authorMatch[0].toLowerCase() : null;
     const pYear = yearMatch ? yearMatch[0] : null;
 
-    console.log(`WordAI matchPlaceholderToBibliography: placeholder="${placeholderText}" clean="${clean}" pAuthor="${pAuthor}" pYear="${pYear}"`);
-    console.log("WordAI matchPlaceholderToBibliography bibliography list:", bibliography);
-
     const scored = bibliography.map(entry => {
         let score = 0;
         
@@ -134,12 +127,10 @@ export function matchPlaceholderToBibliography(placeholderText, bibliography) {
             score += 40;
         }
         
-        console.log(`  --> Entry ID=${entry.id} CoreAuthor="${entry.coreAuthor}" Year="${entry.year}" -> Score=${score}`);
         return { ...entry, score };
     }).filter(e => e.score > 0);
     
     const sorted = scored.sort((a, b) => b.score - a.score);
-    console.log("WordAI matchPlaceholderToBibliography sorted matched results:", sorted);
     return sorted;
 }
 

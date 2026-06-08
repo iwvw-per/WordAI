@@ -1,3 +1,5 @@
+import { describeModelRoute } from "./modelRouting.js";
+
 /**
  * storage.js - 设置存储管理
  * 使用 localStorage 持久化所有配置
@@ -12,6 +14,12 @@ const STORAGE_KEYS = {
   TEMPERATURE: "wordai_temperature",
   DIFF_MODE: "wordai_diff_mode",
   CONCURRENCY_LIMIT: "wordai_concurrency_limit",
+  PRIVACY_MODE: "wordai_privacy_mode",
+  MODEL_ROUTING: "wordai_model_routing",
+  FAST_MODEL: "wordai_fast_model",
+  QUALITY_MODEL: "wordai_quality_model",
+  TASK_HISTORY: "wordai_task_history",
+  TERMINOLOGY_BANK: "wordai_terminology_bank",
 };
 
 // 默认预设提示词
@@ -341,6 +349,86 @@ export function getConcurrencyLimit() {
  */
 export function setConcurrencyLimit(limit) {
   localStorage.setItem(STORAGE_KEYS.CONCURRENCY_LIMIT, limit.toString());
+}
+
+export function getPrivacyMode() {
+  return localStorage.getItem(STORAGE_KEYS.PRIVACY_MODE) === "true";
+}
+
+export function setPrivacyMode(enabled) {
+  localStorage.setItem(STORAGE_KEYS.PRIVACY_MODE, enabled ? "true" : "false");
+}
+
+export function getModelRouting() {
+  return localStorage.getItem(STORAGE_KEYS.MODEL_ROUTING) === "true";
+}
+
+export function setModelRouting(enabled) {
+  localStorage.setItem(STORAGE_KEYS.MODEL_ROUTING, enabled ? "true" : "false");
+}
+
+export function getFastModel() {
+  return localStorage.getItem(STORAGE_KEYS.FAST_MODEL) || "";
+}
+
+export function setFastModel(model) {
+  localStorage.setItem(STORAGE_KEYS.FAST_MODEL, model.trim());
+}
+
+export function getQualityModel() {
+  return localStorage.getItem(STORAGE_KEYS.QUALITY_MODEL) || "";
+}
+
+export function setQualityModel(model) {
+  localStorage.setItem(STORAGE_KEYS.QUALITY_MODEL, model.trim());
+}
+
+export function getRoutedModel(actionName = "") {
+  return describeModelRoute({
+    enabled: getModelRouting(),
+    baseModel: getModel(),
+    fastModel: getFastModel(),
+    qualityModel: getQualityModel(),
+    actionName,
+  }).model;
+}
+
+export function getTaskHistory() {
+  const stored = localStorage.getItem(STORAGE_KEYS.TASK_HISTORY);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addTaskHistory(item) {
+  const history = getTaskHistory();
+  history.unshift({
+    id: item.id,
+    actionName: item.actionName || "",
+    status: item.status || "unknown",
+    model: item.model || "",
+    segmentCount: item.segmentCount || 0,
+    durationMs: item.durationMs || 0,
+    privacy: !!item.privacy,
+    createdAt: item.createdAt || Date.now(),
+  });
+  localStorage.setItem(STORAGE_KEYS.TASK_HISTORY, JSON.stringify(history.slice(0, 30)));
+}
+
+export function clearTaskHistory() {
+  localStorage.removeItem(STORAGE_KEYS.TASK_HISTORY);
+}
+
+export function getTerminologyBankRaw() {
+  return localStorage.getItem(STORAGE_KEYS.TERMINOLOGY_BANK) || "";
+}
+
+export function setTerminologyBankRaw(value) {
+  localStorage.setItem(STORAGE_KEYS.TERMINOLOGY_BANK, value || "");
 }
 
 export { DEFAULT_PROMPTS, DEFAULT_SKIP_RULES };

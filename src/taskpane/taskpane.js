@@ -13,13 +13,10 @@ import * as refUtils from "../utils/references.js";
 import * as termUtils from "../utils/terminology.js";
 import * as numberUtils from "../utils/numbering.js";
 import * as abstractUtils from "../utils/abstract.js";
-
-// ==================== 工具函数 ====================
-function escapeHtml(str) {
-  if (!str) return "";
-  const s = String(str);
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
+import { escapeHtml } from "../utils/html.js";
+import { parseSegmentedResponse } from "../utils/llmOutput.js";
+import { redactSensitiveText, restoreSensitiveText } from "../utils/privacy.js";
+import { findTerminologyBankConflicts, mergeTerminologyConflicts, parseTerminologyBank } from "../utils/terminologyBank.js";
 
 // ==================== 状态 ====================
 let appInitialized = false;
@@ -376,7 +373,9 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     actionName: actionName,
     systemPrompt: systemPrompt,
     segments: segments,
-    status: "pending"
+    status: "pending",
+    createdAt: Date.now(),
+    segmentCount: segments.length
   };
 
   globalTaskQueue.push(pipelineTask);
@@ -445,6 +444,7 @@ async function runSingleTaskAsync(currentTask) {
   currentTask.abortController = new AbortController();
   const signal = currentTask.abortController.signal;
   const segments = currentTask.segments; // 获取所有选中的自然段
+  let routedModel = storage.getRoutedModel(currentTask.actionName);
 
   let retryCount = 0;
   const retryLimit = 3;
@@ -480,6 +480,14 @@ async function runSingleTaskAsync(currentTask) {
       if (hasShields) {
         redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
       }
+      const privacyEnabled = storage.getPrivacyMode();
+      let privacyContext = { text: normalizedInputText, replacements: [] };
+      if (privacyEnabled) {
+        privacyContext = redactSensitiveText(normalizedInputText);
+        if (privacyContext.replacements.length > 0) {
+          redLine += "\n\n【隐私占位符红线】：文中的 [[WAI_SECRET_N]] 是用户隐私占位符，必须原封不动保留，不要解释、翻译、拆分或改写。";
+        }
+      }
       // 强力注入段落隔离协议，约束大模型输出
       redLine += "\n\n【段落标签绝对保留红线】：";
       redLine += "\n1. 输入的文本由多个由 <p id=\"N\">...</p> 包裹的自然段组成，各个段落的物理顺序非常关键。";
@@ -491,13 +499,14 @@ async function runSingleTaskAsync(currentTask) {
       const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
 
       // 触发流式输出并在控制终端行渲染 delta
-      const raw = await llm.callLLMStream(finalPrompt, normalizedInputText, (delta, currentText) => {
+      let raw = await llm.callLLMStream(finalPrompt, privacyContext.text, (delta, currentText) => {
         if (progressSpan && !signal.aborted) {
           let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
           if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
           progressSpan.textContent = `⚡ 改写中: "${displaySnippet}█"`;
         }
-      }, signal);
+      }, signal, { model: routedModel });
+      raw = restoreSensitiveText(raw, privacyContext.replacements);
 
       if (signal.aborted) throw new Error("已取消");
 
@@ -507,24 +516,7 @@ async function runSingleTaskAsync(currentTask) {
 
       // 3. 解析大模型返回的标签隔离子串
       const cleanRaw = llm.cleanAiResponse(raw);
-      const parsedTexts = [];
-      const regex = /<p\s+id="(\d+)">([\s\S]*?)<\/p>/gi;
-      let match;
-      while ((match = regex.exec(cleanRaw)) !== null) {
-        const id = parseInt(match[1]);
-        const val = match[2].trim();
-        parsedTexts[id] = val;
-      }
-
-      // 双重防抱死保底机制：如果大模型漏标，就降级为回车切分
-      if (parsedTexts.filter(t => t !== undefined).length === 0) {
-        const backupLines = cleanRaw.split("\n").filter(l => l.trim() !== "");
-        for (let i = 0; i < segments.length; i++) {
-          // ⚠️ 关键修复：当大模型输出段落少于原文时，使用原文保底（segments[i].text），防止末尾段落被覆盖清空！
-          parsedTexts[i] = backupLines[i] !== undefined ? backupLines[i] : segments[i].text;
-        }
-      }
-
+      const parsedTexts = parseSegmentedResponse(cleanRaw, segments);
       // 4. 精准逐个段落回填！各段落各回各家，100% 保持 Word 原生物理段落样式！
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
@@ -582,6 +574,18 @@ async function runSingleTaskAsync(currentTask) {
     }
     if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
   }
+
+  storage.addTaskHistory({
+    id: currentTask.id,
+    actionName: currentTask.actionName,
+    status: signal.aborted ? "aborted" : success ? "success" : "failed",
+    model: routedModel,
+    segmentCount: currentTask.segmentCount || segments.length,
+    durationMs: Date.now() - currentTask.createdAt,
+    privacy: storage.getPrivacyMode(),
+    createdAt: currentTask.createdAt,
+  });
+  renderTaskHistory();
 
   // 释放并发任务计数，并重新触发队列调度
   activeTaskCount--;
@@ -647,7 +651,7 @@ function showInlineStatus(type, message, canCancel = false) {
   bar.innerHTML = `
     ${iconHtml}
     <div class="status-content">
-      <span class="status-text">${message}</span>
+      <span class="status-text">${escapeHtml(message)}</span>
     </div>
     ${actionHtml}
   `;
@@ -719,6 +723,11 @@ function loadSettings() {
   document.getElementById("skip-toc").checked = rules.toc;
 
   document.getElementById("diff-mode-toggle").checked = storage.getDiffMode();
+  document.getElementById("privacy-mode-toggle").checked = storage.getPrivacyMode();
+  document.getElementById("model-routing-toggle").checked = storage.getModelRouting();
+  document.getElementById("fast-model-input").value = storage.getFastModel();
+  document.getElementById("quality-model-input").value = storage.getQualityModel();
+  document.getElementById("terminology-bank-input").value = storage.getTerminologyBankRaw();
 
   const concurrency = storage.getConcurrencyLimit();
   const slider = document.getElementById("concurrency-slider");
@@ -727,6 +736,7 @@ function loadSettings() {
     slider.value = concurrency;
     valueBadge.textContent = concurrency;
   }
+  renderTaskHistory();
 }
 
 function bindSettingsEvents() {
@@ -781,6 +791,28 @@ function bindSettingsEvents() {
   // 显示对比
   document.getElementById("diff-mode-toggle").addEventListener("change", (e) => {
     storage.setDiffMode(e.target.checked);
+  });
+
+  document.getElementById("privacy-mode-toggle").addEventListener("change", (e) => {
+    storage.setPrivacyMode(e.target.checked);
+  });
+  document.getElementById("model-routing-toggle").addEventListener("change", (e) => {
+    storage.setModelRouting(e.target.checked);
+  });
+  document.getElementById("fast-model-input").addEventListener("change", (e) => {
+    storage.setFastModel(e.target.value);
+  });
+  document.getElementById("quality-model-input").addEventListener("change", (e) => {
+    storage.setQualityModel(e.target.value);
+  });
+  document.getElementById("save-terminology-bank-btn").addEventListener("click", () => {
+    storage.setTerminologyBankRaw(document.getElementById("terminology-bank-input").value);
+    showToast("术语库已保存", "success");
+  });
+  document.getElementById("clear-task-history-btn").addEventListener("click", () => {
+    storage.clearTaskHistory();
+    renderTaskHistory();
+    showToast("任务历史已清空", "success");
   });
 
   // 并发控制
@@ -897,6 +929,36 @@ function checkConfig() {
 
 function showConfigBanner() {
   document.getElementById("config-banner").classList.remove("hidden");
+}
+
+function renderTaskHistory() {
+  const list = document.getElementById("task-history-list");
+  if (!list) return;
+  const history = storage.getTaskHistory();
+  if (history.length === 0) {
+    list.innerHTML = '<div class="compact-list-item">暂无任务历史</div>';
+    return;
+  }
+
+  const statusText = {
+    success: "成功",
+    failed: "失败",
+    aborted: "中止",
+  };
+
+  list.innerHTML = history.map((item) => {
+    const date = new Date(item.createdAt || Date.now()).toLocaleString();
+    const seconds = ((item.durationMs || 0) / 1000).toFixed(1);
+    const privacyLabel = item.privacy ? "隐私" : "普通";
+    return `
+      <div class="compact-list-item">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(item.actionName || "任务")} · ${escapeHtml(statusText[item.status] || item.status)}</div>
+          <div style="font-size:10px; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis;">${escapeHtml(date)} · ${escapeHtml(item.model || "默认模型")} · ${item.segmentCount || 0}段 · ${seconds}s · ${privacyLabel}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
 }
 
 // ==================== 提示词管理 ====================
@@ -1191,7 +1253,10 @@ function bindAcademicEvents() {
       });
 
       // 【关键修复】：将耗时巨大的大模型网络请求彻底剥离出随时可能 Timeout 的 Word.run 隔离区
-      const conflicts = await termUtils.extractTerminology(extractedText);
+      const terminologyBank = parseTerminologyBank(storage.getTerminologyBankRaw());
+      const bankConflicts = findTerminologyBankConflicts(extractedText, terminologyBank);
+      const aiConflicts = await termUtils.extractTerminology(extractedText);
+      const conflicts = mergeTerminologyConflicts(bankConflicts, aiConflicts);
 
       if (!conflicts || conflicts.length === 0) {
         resultsDiv.innerHTML = '<div class="compact-list-item">未发现明显术_语冲突 ✨</div>';
@@ -1202,18 +1267,19 @@ function bindAcademicEvents() {
       resultsDiv.innerHTML = conflicts.map((c, i) => `
           <div class="compact-list-item term-conflict-item">
             <div style="flex:1">
-              <span class="badge" style="background:var(--primary-light)">${c.standard}</span>
-              <span style="font-size:10px; color:var(--text-secondary)"> ← ${c.aliases.join(", ")}</span>
+              <span class="badge" style="background:var(--primary-light)">${escapeHtml(c.standard)}</span>
+              <span style="font-size:10px; color:var(--text-secondary)"> ← ${escapeHtml(c.aliases.join(", "))}</span>
             </div>
-            <button class="btn btn-xs btn-ghost unify-term-btn" data-standard="${c.standard}" data-aliases='${JSON.stringify(c.aliases)}'>统一</button>
+            <button class="btn btn-xs btn-ghost unify-term-btn" data-index="${i}">统一</button>
           </div>
         `).join("");
 
       // 绑定统一事件
       resultsDiv.querySelectorAll(".unify-term-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
-          const standard = btn.dataset.standard;
-          const aliases = JSON.parse(btn.dataset.aliases);
+          const conflict = conflicts[parseInt(btn.dataset.index, 10)];
+          const standard = conflict?.standard || "";
+          const aliases = Array.isArray(conflict?.aliases) ? conflict.aliases : [];
           btn.disabled = true;
           btn.textContent = "⏳";
           try {
@@ -1313,7 +1379,9 @@ async function updateRefNavigator() {
       const pAuthor = authorMatch ? authorMatch[0].toLowerCase() : null;
       const pYear = yearMatch ? yearMatch[0] : null;
 
-      let html = `<div style="margin-bottom:4px; font-weight:bold; color:var(--primary);">正文提取：作者="${pAuthor || '无'}" 年份="${pYear || '无'}"</div>`;
+      const displayAuthor = escapeHtml(pAuthor || "无");
+      const displayYear = escapeHtml(pYear || "无");
+      let html = `<div style="margin-bottom:4px; font-weight:bold; color:var(--primary);">正文提取：作者="${displayAuthor}" 年份="${displayYear}"</div>`;
       
       if (!refNavState.bibliography || refNavState.bibliography.length === 0) {
         html += `<div style="color:var(--error); font-weight:bold;">⚠️ 侧边栏未检索到文末参考文献！请先确认文档末尾有以“参考文献”或“References”命名的标题，且下方包含完整的文献列表。</div>`;
@@ -1333,9 +1401,10 @@ async function updateRefNavigator() {
             matchLog.push(`年份相同(+40)`);
           }
           const logStr = score > 0 ? ` [${matchLog.join(',')}]` : ' [无匹配点]';
+          const displayText = escapeHtml(entry.text.substring(0, 45));
           return `<div style="margin-bottom:4px; border-bottom:1px dashed rgba(0,0,0,0.05); padding-bottom:2px; ${score > 0 ? 'color:#10b981; font-weight:500;' : ''}">
-            [${entry.id}] 得分: ${score}${logStr}<br/>
-            <span style="font-size:9px; opacity:0.8; color:var(--text-secondary);">文献: ${entry.text.substring(0, 45)}...</span>
+            [${entry.id}] 得分: ${score}${escapeHtml(logStr)}<br/>
+            <span style="font-size:9px; opacity:0.8; color:var(--text-secondary);">文献: ${displayText}...</span>
           </div>`;
         }).join("");
       }
