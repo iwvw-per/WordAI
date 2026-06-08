@@ -202,6 +202,30 @@
       </section>
 
       <section class="section">
+        <h2 class="section-title">隐私与模型路由</h2>
+        <div class="skip-rules">
+          <label class="toggle-item">
+            <input type="checkbox" id="privacy-mode-toggle" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">隐私脱敏</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="model-routing-toggle" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">模型路由</span>
+          </label>
+        </div>
+        <div class="form-group" style="margin-top:8px;">
+          <label class="form-label" for="fast-model-input">快速模型</label>
+          <input type="text" id="fast-model-input" class="form-input" placeholder="留空则使用默认模型" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="quality-model-input">质量模型</label>
+          <input type="text" id="quality-model-input" class="form-input" placeholder="学术/摘要/降AI优先使用" />
+        </div>
+      </section>
+
+      <section class="section">
         <h2 class="section-title">跳过规则</h2>
         <p class="section-desc">处理时自动跳过</p>
         <div class="skip-rules">
@@ -255,6 +279,20 @@
         </h2>
         <div id="prompt-list" class="prompt-list"></div>
         <button class="btn btn-ghost btn-block btn-sm" id="reset-prompts-btn">↻ 恢复默认</button>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">术语库</h2>
+        <textarea id="terminology-bank-input" class="form-input" rows="4" placeholder="标准术语=别名1,别名2"></textarea>
+        <button class="btn btn-primary btn-block btn-sm" id="save-terminology-bank-btn" style="margin-top:4px">保存术语库</button>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">
+          任务历史
+          <button class="btn btn-sm btn-ghost" id="clear-task-history-btn">清空</button>
+        </h2>
+        <div id="task-history-list" class="compact-list"></div>
       </section>
 
       <footer class="settings-footer">

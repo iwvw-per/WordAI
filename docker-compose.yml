@@ -1,6 +1,6 @@
 services:
   wordai:
-    image: ghcr.io/iwvw/wordai:latest
+    image: iwvw/wordai:latest
     ports:
       - "8080:80"
     environment:

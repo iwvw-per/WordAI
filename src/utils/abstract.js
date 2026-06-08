@@ -1,4 +1,6 @@
 import * as llm from "./llm.js";
+import * as storage from "./storage.js";
+import { redactSensitiveText, restoreSensitiveText } from "./privacy.js";
 
 /**
  * 生成摘要与关键词
@@ -24,6 +26,19 @@ export async function generateAbstract() {
         contextText += "\n... (省略)";
     }
 
-    const prompt = `提炼论文全文草稿，生成结构化摘要。包含：背景、方法、结果、意义，及 3-5 个关键词。`;
-    return await llm.callLLM(prompt, contextText);
+    let prompt = `提炼论文全文草稿，生成结构化摘要。包含：背景、方法、结果、意义，及 3-5 个关键词。`;
+    let llmInput = contextText;
+    let replacements = [];
+
+    if (storage.getPrivacyMode()) {
+        const privacyContext = redactSensitiveText(contextText);
+        llmInput = privacyContext.text;
+        replacements = privacyContext.replacements;
+        if (replacements.length > 0) {
+            prompt += "\n\n文中的 [[WAI_SECRET_N]] 是用户隐私占位符，必须原样保留，不要解释、翻译、拆分或改写。";
+        }
+    }
+
+    const result = await llm.callLLM(prompt, llmInput, undefined, { model: storage.getRoutedModel("abstract") });
+    return restoreSensitiveText(result, replacements);
 }
