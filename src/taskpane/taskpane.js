@@ -7,16 +7,10 @@ import "./taskpane.css";
 import * as storage from "../utils/storage.js";
 import * as llm from "../utils/llm.js";
 import * as ooxml from "../utils/ooxml.js";
-import * as format from "../utils/format.js";
 import * as tableUtils from "../utils/table.js";
-import * as refUtils from "../utils/references.js";
-import * as termUtils from "../utils/terminology.js";
-import * as numberUtils from "../utils/numbering.js";
-import * as abstractUtils from "../utils/abstract.js";
 import { escapeHtml } from "../utils/html.js";
 import { parseSegmentedResponse } from "../utils/llmOutput.js";
 import { redactSensitiveText, restoreSensitiveText } from "../utils/privacy.js";
-import { findTerminologyBankConflicts, mergeTerminologyConflicts, parseTerminologyBank } from "../utils/terminologyBank.js";
 
 // ==================== 状态 ====================
 let appInitialized = false;
@@ -30,10 +24,9 @@ let globalTaskQueue = [];
 let activeTaskCount = 0;
 let taskCounter = 0;
 
-let refNavState = {
-  items: [],
-  currentIndex: 0
-};
+// 防重复触发：同一动作 1 秒内忽略重复点击
+const ACTION_DEBOUNCE_MS = 1000;
+let lastActionTime = 0;
 
 // ==================== 初始化 ====================
 if (typeof Office !== "undefined") {
@@ -68,6 +61,7 @@ function initApp() {
   bindTabEvents();
   bindActionEvents();
   bindSettingsEvents();
+  bindRoutingModelSelects();
   bindModalEvents();
   bindAcademicEvents();
   bindDeckEvents();
@@ -322,16 +316,24 @@ function bindActionEvents() {
     const body = document.getElementById("pipeline-console-body");
     const title = document.getElementById("pipeline-console-title");
     if (body) {
-      body.innerHTML = '<div class="console-line system">⚡ 流水线控制台已清空。</div>';
+      body.innerHTML = '<div class="console-line system">已清空</div>';
     }
     if (title) {
-      title.textContent = "空闲";
+      title.textContent = "就绪";
     }
   });
 }
 
 // ==================== 核心：一键执行 ====================
 async function executeAction(systemPrompt, actionName, triggerBtn) {
+  // 防重复触发：避免用户因无反馈连点导致同一选区重复入队
+  const now = Date.now();
+  if (now - lastActionTime < ACTION_DEBOUNCE_MS) {
+    showToast("正在处理中，请稍候", "warning");
+    return;
+  }
+  lastActionTime = now;
+
   if (!storage.isConfigured()) {
     showConfigBanner();
     showToast("请先完成 API 配置", "warning");
@@ -349,8 +351,9 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
   // 展示控制台面板
   if (consoleSection) consoleSection.classList.remove("hidden");
 
-  // 触发按钮触感反馈（非灰变禁用）
+  // 触发按钮触感反馈 + 立即给出处理中的状态提示（避免误以为没反应）
   setAllActionsLoading(true, triggerBtn);
+  showInlineStatus("processing", `正在处理：${actionName}...`);
 
   let segments = [];
   try {
@@ -359,7 +362,18 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     if (!segments || segments.length === 0) {
       throw new Error("请先在 Word 中选中需要处理的文字内容");
     }
+
+    // 提示：含公式被跳过的段落
+    const skippedInfo = segments.skippedInfo || {};
+    if (skippedInfo.formula > 0 && consoleBody) {
+      const tip = document.createElement("div");
+      tip.className = "console-line system";
+      tip.textContent = `${skippedInfo.formula} 个段落含公式，已跳过`;
+      consoleBody.appendChild(tip);
+      consoleBody.scrollTop = consoleBody.scrollHeight;
+    }
   } catch (err) {
+    hideInlineStatus();
     showToast(err.message, "error");
     return;
   }
@@ -375,7 +389,8 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     segments: segments,
     status: "pending",
     createdAt: Date.now(),
-    segmentCount: segments.length
+    segmentCount: segments.length,
+    abortController: new AbortController(),
   };
 
   globalTaskQueue.push(pipelineTask);
@@ -383,7 +398,7 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
   // 在滚动控制台动态注入精简的单行任务项
   if (consoleBody) {
     const placeholder = consoleBody.querySelector(".console-line.system");
-    if (placeholder && placeholder.textContent.includes("流水线已准备就绪")) {
+    if (placeholder && placeholder.textContent.includes("就绪")) {
       placeholder.remove();
     }
 
@@ -392,15 +407,34 @@ async function executeAction(systemPrompt, actionName, triggerBtn) {
     taskLine.className = "console-line pending";
     taskLine.innerHTML = `
       <span class="task-badge">#${taskCounter}</span>
+      <span class="task-status-icon" id="console-status-${taskId}">⏳</span>
       <span class="task-name" title="${escapeHtml(actionName)}">${escapeHtml(actionName)}</span>
-      <span class="task-progress" id="console-progress-${taskId}">⏳ 排队中</span>
+      <span class="task-progress" id="console-progress-${taskId}">等待中</span>
+      <button class="task-cancel-btn" id="console-cancel-${taskId}" title="取消任务">✕</button>
     `;
 
     consoleBody.appendChild(taskLine);
     consoleBody.scrollTop = consoleBody.scrollHeight;
+
+    // 取消按钮：排队中直接移出队列；执行中中止请求并回滚
+    taskLine.querySelector(`#console-cancel-${taskId}`).addEventListener("click", () => {
+      const idx = globalTaskQueue.findIndex((t) => t.id === taskId);
+      if (idx >= 0) {
+        globalTaskQueue.splice(idx, 1);
+        taskLine.className = "console-line error";
+        const icon = document.getElementById(`console-status-${taskId}`);
+        const prog = document.getElementById(`console-progress-${taskId}`);
+        if (icon) icon.textContent = "🛑";
+        if (prog) prog.textContent = "已取消";
+        updateConsoleTitleState();
+      } else {
+        pipelineTask.abortController.abort(new Error("已取消"));
+      }
+    });
   }
 
-  showToast(`任务 #${taskCounter} [${actionName}] 已锁屏排队 ✓`, "success");
+  showToast(`任务 #${taskCounter} [${actionName}] 已加入队列`, "success");
+  hideInlineStatus();
 
   // 触发全局调度器
   processTaskQueue();
@@ -435,14 +469,16 @@ async function runSingleTaskAsync(currentTask) {
   const taskId = currentTask.id;
   const taskLine = document.getElementById(`console-task-${taskId}`);
   const progressSpan = document.getElementById(`console-progress-${taskId}`);
+  const statusIcon = taskLine ? taskLine.querySelector(".task-status-icon") : null;
 
   if (taskLine) {
     taskLine.className = "console-line processing";
   }
+  if (statusIcon) statusIcon.textContent = "⚡";
   updateConsoleTitleState();
 
-  currentTask.abortController = new AbortController();
   const signal = currentTask.abortController.signal;
+  currentAbortController = currentTask.abortController; // 接线全局“中断”按钮
   const segments = currentTask.segments; // 获取所有选中的自然段
   let routedModel = storage.getRoutedModel(currentTask.actionName);
 
@@ -450,147 +486,152 @@ async function runSingleTaskAsync(currentTask) {
   const retryLimit = 3;
   let success = false;
 
-  while (retryCount < retryLimit) {
-    if (signal.aborted) break;
+  try {
+    while (retryCount < retryLimit) {
+      if (signal.aborted) break;
 
-    try {
-      if (progressSpan) {
-        if (retryCount > 0) {
-          progressSpan.textContent = `⏳ 重试 ${retryCount}/3...`;
+      try {
+        if (progressSpan) {
+          if (retryCount > 0) {
+            progressSpan.textContent = `重试 ${retryCount}/3`;
+          } else {
+            progressSpan.textContent = "处理中";
+          }
+          if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
+        }
+
+        // 1. 拼接带段落隔离标签的发送大文本
+        let normalizedInputText = "";
+        let hasShields = false;
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          if (seg.refMap && seg.refMap.length > 0) {
+            hasShields = true;
+          }
+          const textClean = seg.text.replace(/\r/g, "\n");
+          normalizedInputText += `<p id="${i}">${textClean}</p>\n`;
+        }
+
+        // 2. 拼装红线限制提示词
+        let redLine = "";
+        if (hasShields) {
+          redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
+        }
+        const privacyEnabled = storage.getPrivacyMode();
+        let privacyContext = { text: normalizedInputText, replacements: [] };
+        if (privacyEnabled) {
+          privacyContext = redactSensitiveText(normalizedInputText);
+          if (privacyContext.replacements.length > 0) {
+            redLine += "\n\n【隐私占位符红线】：文中的 [[WAI_SECRET_N]] 是用户隐私占位符，必须原封不动保留，不要解释、翻译、拆分或改写。";
+          }
+        }
+        // 强力注入段落隔离协议，约束大模型输出
+        redLine += "\n\n【段落标签绝对保留红线】：";
+        redLine += "\n1. 输入的文本由多个由 <p id=\"N\">...</p> 包裹的自然段组成，各个段落的物理顺序非常关键。";
+        redLine += "\n2. 你必须对每个段落 <p id=\"N\"> 内部的文本进行独立的润色或修改。";
+        redLine += "\n3. 你必须原封不动地返回所有的段落外层 HTML 标签（即 <p id=\"N\"> 和 </p>），原封不动地保留其原有的 id 编号和原有的段落物理顺序。";
+        redLine += "\n4. 严禁将多个标签内的文本合并到同一个段落里，严禁增减、拆分或删除任何标签！";
+        redLine += "\n5. 请严格输出如下格式的内容：<p id=\"0\">第一段修改后文本</p>\\n<p id=\"1\">第二段修改后文本</p>";
+
+        const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
+
+        // 触发流式输出并在控制终端行渲染 delta
+        let raw = await llm.callLLMStream(finalPrompt, privacyContext.text, (delta, currentText) => {
+          if (progressSpan && !signal.aborted) {
+            let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
+            if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
+            progressSpan.textContent = `⚡ 改写中: "${displaySnippet}█"`;
+          }
+        }, signal, { model: routedModel });
+        raw = restoreSensitiveText(raw, privacyContext.replacements);
+
+        if (signal.aborted) throw new Error("已取消");
+
+        if (progressSpan) {
+          progressSpan.textContent = `🧩 恢复排版中...`;
+        }
+
+        // 3. 解析大模型返回的标签隔离子串
+        const cleanRaw = llm.cleanAiResponse(raw);
+        const parsedTexts = parseSegmentedResponse(cleanRaw, segments);
+        // 4. 精准逐个段落回填！各段落各回各家，100% 保持 Word 原生物理段落样式！
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          const aiText = parsedTexts[i] || seg.text; // 保底，无此段改写就写回原文
+          if (aiText) {
+            await ooxml.replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags, seg.text);
+          }
+        }
+
+        success = true;
+        break; // 成功后跳出重试循环
+
+      } catch (err) {
+        if (err.name === "AbortError" || err.message === "已取消") {
+          break; // 手动取消退场
+        }
+
+        retryCount++;
+        if (retryCount < retryLimit) {
+          console.warn(`任务 #${currentTask.num} 失败，正在进行第 ${retryCount} 次重试. 错误: ${err.message}`);
+          await new Promise(resolve => setTimeout(resolve, 500)); // 重试前避让延时
         } else {
-          progressSpan.textContent = `⚡ 请求云端中...`;
+          console.error(`任务 #${currentTask.num} 在重试 ${retryLimit} 次后依然失败. 错误: ${err.message}`);
+          // 彻底失败：还原引用遮罩并清理边界标记，避免文档残留 [REF_N] 占位符
+          try {
+            await ooxml.rollbackSegments(segments);
+          } catch (rollbackErr) {
+            console.error("任务失败回滚出错:", rollbackErr);
+          }
+          break;
+        }
+      }
+    }
+  } finally {
+    // 释放全局取消引用（仅当仍指向本任务时）
+    if (currentAbortController === currentTask.abortController) {
+      currentAbortController = null;
+    }
+
+    // 更新 Task 行的完成或中止状态（独立 try，防止 UI 异常卡死调度队列）
+    try {
+      if (taskLine) {
+        if (signal.aborted) {
+          taskLine.className = "console-line error";
+          if (statusIcon) statusIcon.textContent = "🛑";
+          if (progressSpan) progressSpan.textContent = `已中止`;
+        } else if (success) {
+          taskLine.className = "console-line done";
+          if (statusIcon) statusIcon.textContent = "✅";
+          if (progressSpan) progressSpan.textContent = `成功`;
+        } else {
+          taskLine.className = "console-line error";
+          if (statusIcon) statusIcon.textContent = "❌";
+          if (progressSpan) progressSpan.textContent = `失败`;
         }
         if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
       }
 
-      // 1. 拼接带段落隔离标签的发送大文本
-      let normalizedInputText = "";
-      let hasShields = false;
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        if (seg.refMap && seg.refMap.length > 0) {
-          hasShields = true;
-        }
-        const textClean = seg.text.replace(/\r/g, "\n");
-        normalizedInputText += `<p id="${i}">${textClean}</p>\n`;
-      }
-
-      // 2. 拼装红线限制提示词
-      let redLine = "";
-      if (hasShields) {
-        redLine += "\n\n【绝对禁令】：文中的 [REF_N], [EQN_N], [FNOTE_N] 是物理引用或公式锚点，你必须原封不动地保留所有此类标记（包括内部的类型、编号以及外层的英文中括号 []），必须将其放置在改写后对应的语义位置。严禁删除、修改括号类型（不能改为 【】 或 『』等）！";
-      }
-      const privacyEnabled = storage.getPrivacyMode();
-      let privacyContext = { text: normalizedInputText, replacements: [] };
-      if (privacyEnabled) {
-        privacyContext = redactSensitiveText(normalizedInputText);
-        if (privacyContext.replacements.length > 0) {
-          redLine += "\n\n【隐私占位符红线】：文中的 [[WAI_SECRET_N]] 是用户隐私占位符，必须原封不动保留，不要解释、翻译、拆分或改写。";
-        }
-      }
-      // 强力注入段落隔离协议，约束大模型输出
-      redLine += "\n\n【段落标签绝对保留红线】：";
-      redLine += "\n1. 输入的文本由多个由 <p id=\"N\">...</p> 包裹的自然段组成，各个段落的物理顺序非常关键。";
-      redLine += "\n2. 你必须对每个段落 <p id=\"N\"> 内部的文本进行独立的润色或修改。";
-      redLine += "\n3. 你必须原封不动地返回所有的段落外层 HTML 标签（即 <p id=\"N\"> 和 </p>），原封不动地保留其原有的 id 编号和原有的段落物理顺序。";
-      redLine += "\n4. 严禁将多个标签内的文本合并到同一个段落里，严禁增减、拆分或删除任何标签！";
-      redLine += "\n5. 请严格输出如下格式的内容：<p id=\"0\">第一段修改后文本</p>\\n<p id=\"1\">第二段修改后文本</p>";
-
-      const finalPrompt = redLine ? (currentTask.systemPrompt + redLine + "\n") : currentTask.systemPrompt;
-
-      // 触发流式输出并在控制终端行渲染 delta
-      let raw = await llm.callLLMStream(finalPrompt, privacyContext.text, (delta, currentText) => {
-        if (progressSpan && !signal.aborted) {
-          let displaySnippet = currentText.replace(/<\/?p[^>]*>|\[PARAGRAPH_\d+\]|\n/gi, "");
-          if (displaySnippet.length > 15) displaySnippet = "..." + displaySnippet.slice(-15);
-          progressSpan.textContent = `⚡ 改写中: "${displaySnippet}█"`;
-        }
-      }, signal, { model: routedModel });
-      raw = restoreSensitiveText(raw, privacyContext.replacements);
-
-      if (signal.aborted) throw new Error("已取消");
-
-      if (progressSpan) {
-        progressSpan.textContent = `🧩 恢复排版中...`;
-      }
-
-      // 3. 解析大模型返回的标签隔离子串
-      const cleanRaw = llm.cleanAiResponse(raw);
-      const parsedTexts = parseSegmentedResponse(cleanRaw, segments);
-      // 4. 精准逐个段落回填！各段落各回各家，100% 保持 Word 原生物理段落样式！
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        const aiText = parsedTexts[i] || seg.text; // 保底，无此段改写就写回原文
-        if (aiText) {
-          await ooxml.replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags);
-        }
-      }
-
-      success = true;
-      break; // 成功后跳出重试循环
-
+      storage.addTaskHistory({
+        id: currentTask.id,
+        actionName: currentTask.actionName,
+        status: signal.aborted ? "aborted" : success ? "success" : "failed",
+        model: routedModel,
+        segmentCount: currentTask.segmentCount || segments.length,
+        durationMs: Date.now() - currentTask.createdAt,
+        privacy: storage.getPrivacyMode(),
+        createdAt: currentTask.createdAt,
+      });
+      renderTaskHistory();
     } catch (err) {
-      if (err.name === "AbortError" || err.message === "已取消") {
-        break; // 手动取消退场
-      }
-
-      retryCount++;
-      if (retryCount < retryLimit) {
-        console.warn(`任务 #${currentTask.num} 失败，正在进行第 ${retryCount} 次重试. 错误: ${err.message}`);
-        await new Promise(resolve => setTimeout(resolve, 500)); // 重试前避让延时
-      } else {
-        console.error(`任务 #${currentTask.num} 在重试 ${retryLimit} 次后依然失败. 错误: ${err.message}`);
-        // 彻底失败清理边界标记
-        try {
-          await Word.run(async (context) => {
-            for (const seg of segments) {
-              const startCCs = context.document.contentControls.getByTag(seg.boundaryTags.start);
-              const endCCs = context.document.contentControls.getByTag(seg.boundaryTags.end);
-              startCCs.load("items");
-              endCCs.load("items");
-              await context.sync();
-              if (startCCs.items.length > 0) startCCs.items[0].delete(true);
-              if (endCCs.items.length > 0) endCCs.items[0].delete(true);
-            }
-            await context.sync();
-          });
-        } catch {}
-        break;
-      }
+      console.error("更新任务状态失败:", err);
     }
+
+    // 释放并发任务计数，并重新触发队列调度（无论成功失败都必须执行）
+    activeTaskCount--;
+    updateConsoleTitleState();
+    processTaskQueue();
   }
-
-  // 更新 Task 行的完成或中止状态
-  if (taskLine) {
-    if (signal.aborted) {
-      taskLine.className = "console-line error";
-      if (progressSpan) progressSpan.textContent = `🛑 已中止`;
-    } else if (success) {
-      taskLine.className = "console-line done";
-      if (progressSpan) progressSpan.textContent = `✅ 成功`;
-    } else {
-      taskLine.className = "console-line error";
-      if (progressSpan) progressSpan.textContent = `❌ 失败`;
-    }
-    if (consoleBody) consoleBody.scrollTop = consoleBody.scrollHeight;
-  }
-
-  storage.addTaskHistory({
-    id: currentTask.id,
-    actionName: currentTask.actionName,
-    status: signal.aborted ? "aborted" : success ? "success" : "failed",
-    model: routedModel,
-    segmentCount: currentTask.segmentCount || segments.length,
-    durationMs: Date.now() - currentTask.createdAt,
-    privacy: storage.getPrivacyMode(),
-    createdAt: currentTask.createdAt,
-  });
-  renderTaskHistory();
-
-  // 释放并发任务计数，并重新触发队列调度
-  activeTaskCount--;
-  updateConsoleTitleState();
-  processTaskQueue();
 }
 
 /**
@@ -600,9 +641,9 @@ function updateConsoleTitleState() {
   const consoleTitle = document.getElementById("pipeline-console-title");
   if (!consoleTitle) return;
   if (activeTaskCount > 0) {
-    consoleTitle.textContent = `正在执行 (${activeTaskCount} 个任务)...`;
+    consoleTitle.textContent = `执行中 (${activeTaskCount})`;
   } else {
-    consoleTitle.textContent = globalTaskQueue.length > 0 ? "等待调度中" : "队列已清空";
+    consoleTitle.textContent = globalTaskQueue.length > 0 ? "等待中" : "就绪";
   }
 }
 
@@ -725,8 +766,8 @@ function loadSettings() {
   document.getElementById("diff-mode-toggle").checked = storage.getDiffMode();
   document.getElementById("privacy-mode-toggle").checked = storage.getPrivacyMode();
   document.getElementById("model-routing-toggle").checked = storage.getModelRouting();
-  document.getElementById("fast-model-input").value = storage.getFastModel();
-  document.getElementById("quality-model-input").value = storage.getQualityModel();
+  document.getElementById("input-tracked-author").value = storage.getTrackedAuthor();
+  populateModelSelects([]);
   document.getElementById("terminology-bank-input").value = storage.getTerminologyBankRaw();
 
   const concurrency = storage.getConcurrencyLimit();
@@ -791,6 +832,70 @@ function bindSettingsEvents() {
   // 显示对比
   document.getElementById("diff-mode-toggle").addEventListener("change", (e) => {
     storage.setDiffMode(e.target.checked);
+  });
+
+  // 修订作者名
+  document.getElementById("input-tracked-author")?.addEventListener("change", (e) => {
+    storage.setTrackedAuthor(e.target.value);
+  });
+
+  // 配置备份/还原
+  const configModal = document.getElementById("config-modal");
+  const configText = document.getElementById("config-modal-text");
+  const configTitle = document.getElementById("config-modal-title");
+  const configOk = document.getElementById("config-modal-ok");
+
+  document.getElementById("btn-backup-config")?.addEventListener("click", () => {
+    if (!configModal || !configText) return;
+    configText.readOnly = true;
+    configText.value = storage.exportConfig();
+    configTitle.textContent = "配置备份（复制并保存）";
+    configOk.classList.add("hidden");
+    configModal.classList.remove("hidden");
+  });
+
+  document.getElementById("btn-restore-config")?.addEventListener("click", () => {
+    if (!configModal || !configText) return;
+    configText.readOnly = false;
+    configText.value = "";
+    configTitle.textContent = "还原配置（粘贴 JSON）";
+    configOk.classList.remove("hidden");
+    configModal.classList.remove("hidden");
+  });
+
+  document.getElementById("config-modal-cancel")?.addEventListener("click", () => {
+    configModal.classList.add("hidden");
+  });
+  document.getElementById("config-modal-ok")?.addEventListener("click", () => {
+    try {
+      const count = storage.importConfig(configText.value);
+      showToast(`已还原 ${count} 项配置`, "success");
+      configModal.classList.add("hidden");
+      loadSettings();
+      checkConfig();
+      renderActionButtons();
+      renderPromptList();
+    } catch (err) {
+      showToast("还原失败：配置格式无效", "error");
+    }
+  });
+  configModal?.querySelector(".modal-overlay")?.addEventListener("click", () => {
+    configModal.classList.add("hidden");
+  });
+
+  // 接受全部修订标记
+  document.getElementById("btn-accept-diff")?.addEventListener("click", async () => {
+    try {
+      const btn = document.getElementById("btn-accept-diff");
+      if (btn) btn.disabled = true;
+      const count = await ooxml.acceptAllDiff();
+      showToast(count > 0 ? `已接受 ${count} 处修订` : "没有发现待接受的修订", count > 0 ? "success" : "info");
+    } catch (err) {
+      showToast("接受修订失败: " + err.message, "error");
+    } finally {
+      const btn = document.getElementById("btn-accept-diff");
+      if (btn) btn.disabled = false;
+    }
   });
 
   document.getElementById("privacy-mode-toggle").addEventListener("change", (e) => {
@@ -872,6 +977,7 @@ async function fetchModelList() {
       }
       status.textContent = `${models.length} 个模型`;
       status.style.color = "var(--success)";
+      populateModelSelects(models);
       checkConfig();
     }
   } catch (err) {
@@ -882,6 +988,60 @@ async function fetchModelList() {
     btn.textContent = "🔄";
     setTimeout(() => (status.style.color = ""), 3000);
   }
+}
+
+/**
+ * 填充“快速模型 / 质量模型”两个路由下拉框
+ * @param {Array} models - [{ id, name }] 模型列表；为空则仅保留默认项与当前已存值
+ */
+function populateModelSelects(models) {
+  const fastSelect = document.getElementById("fast-model-input");
+  const qualitySelect = document.getElementById("quality-model-input");
+  if (!fastSelect || !qualitySelect) return;
+
+  const savedPairs = [
+    [fastSelect, storage.getFastModel()],
+    [qualitySelect, storage.getQualityModel()],
+  ];
+
+  for (const [select, saved] of savedPairs) {
+    const html = ['<option value="">-- 默认模型 --</option>'];
+    const added = new Set();
+    if (saved) {
+      html.push(`<option value="${escapeHtml(saved)}" selected>${escapeHtml(saved)}</option>`);
+      added.add(saved);
+    }
+    for (const m of models || []) {
+      if (!m || !m.id || added.has(m.id)) continue;
+      html.push(`<option value="${escapeHtml(m.id)}">${escapeHtml(m.name || m.id)}</option>`);
+      added.add(m.id);
+    }
+    select.innerHTML = html.join("");
+    select.value = saved || "";
+  }
+}
+
+// 快速/质量模型下拉框：聚焦时自动刷新模型列表（30 秒防抖）
+function bindRoutingModelSelects() {
+  let lastFetchTime = 0;
+  const refresh = (selectId) => {
+    const now = Date.now();
+    if (now - lastFetchTime > 30000 && storage.getEndpoint() && storage.getApiKey()) {
+      lastFetchTime = now;
+      llm.fetchModels()
+        .then((models) => {
+          populateModelSelects(models);
+          checkConfig();
+        })
+        .catch((err) => {
+          console.warn("刷新路由模型列表失败:", err.message);
+        });
+    }
+  };
+  ["fast-model-input", "quality-model-input"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("focus", () => refresh(id));
+  });
 }
 
 async function testApiConnection() {
@@ -913,6 +1073,7 @@ async function testApiConnection() {
       select.appendChild(o);
     });
     if (!cur && result.models.length > 0) storage.setModel(result.models[0].id);
+    populateModelSelects(result.models);
     checkConfig();
   }
 
@@ -1064,7 +1225,7 @@ function showToast(message, type = "info") {
     color: "white",
     background: colors[type] || colors.info,
     zIndex: "200",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+    boxShadow: "var(--toast-shadow)",
     whiteSpace: "nowrap",
     opacity: "0",
     transition: "all 0.25s ease",
@@ -1084,372 +1245,101 @@ function showToast(message, type = "info") {
 
 // ==================== 学术工具事件 ====================
 function bindAcademicEvents() {
-  // --- 表格工具 ---
-  document.getElementById("btn-apply-3line")?.addEventListener("click", async () => {
-    try {
-      showInlineStatus("processing", "正在美化表格...");
-      await Word.run(async (context) => {
-        const selection = context.document.getSelection();
-        const tables = selection.tables;
-        tables.load("items");
-        await context.sync();
+  // --- 表格样式 ---
+  const styleSelect = document.getElementById("select-table-style");
+  const styleInputWrap = document.getElementById("custom-style-wrap");
+  const styleInput = document.getElementById("input-custom-style");
 
-        if (tables.items.length === 0) throw new Error("请先选中包含表格的区域");
+  // 下拉加载失败/不可用时，切换到手动输入样式名（兼容自定义样式）
+  const fallbackToInput = (msg) => {
+    if (msg) console.warn("表格样式下拉加载失败，已切换为手动输入:", msg);
+    if (styleSelect) styleSelect.classList.add("hidden");
+    if (styleInputWrap) styleInputWrap.classList.remove("hidden");
+  };
 
-        const config = {
-          topWidth: parseFloat(document.getElementById("input-line-bold").value) || 1.5,
-          bottomWidth: parseFloat(document.getElementById("input-line-bold").value) || 1.5,
-          headerWidth: 0.75
-        };
-
-        for (let table of tables.items) {
-          await tableUtils.applyAcademicStyle(table, config);
-        }
-        showInlineStatus("done", "表格已美化 ✓");
-      });
-    } catch (err) {
-      showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 5000);
-    }
-  });
-
-  document.getElementById("btn-scan-tables")?.addEventListener("click", async () => {
-    try {
-      const resultsDiv = document.getElementById("table-scan-results");
-      resultsDiv.classList.toggle("hidden");
-      if (resultsDiv.classList.contains("hidden")) return;
-
-      resultsDiv.innerHTML = '<div class="compact-list-item">扫描中...</div>';
-
-      const tables = await tableUtils.getAllTablesInfo();
-      if (tables.length === 0) {
-        resultsDiv.innerHTML = '<div class="compact-list-item">未发现表格</div>';
-      } else {
-        resultsDiv.innerHTML = tables.map(t => `
-          <div class="compact-list-item" data-id="${t.id}">
-            <span>表格 ${t.id + 1} (${t.rowCount}x${t.columnCount})</span>
-          </div>
-        `).join("");
-      }
-    } catch (err) {
-      showToast(err.message, "error");
-    }
-  });
-
-  // --- 参考文献 ---
-  document.getElementById("btn-match-refs")?.addEventListener("click", async () => {
-    try {
-      showInlineStatus("processing", "正在扫描占位符与文献列表...");
-
-      // scanPlaceholders 现在返回纯数据
-      const [placeholderData, bibliography] = await Promise.all([
-        refUtils.scanPlaceholders(),
-        refUtils.parseBibliography()
-      ]);
-
-      if (placeholderData.count === 0) {
-        showInlineStatus("done", "未发现占位符");
-        setTimeout(() => hideInlineStatus(), 2000);
-        return;
-      }
-
-      // 重新在 Word.run 内创建 ContentControl 标记
-      await Word.run(async (context) => {
-        // 清理旧标记
-        const oldCCs = context.document.contentControls.getByTag("wordai_ref_placeholder");
-        oldCCs.load("items");
-        await context.sync();
-        for (let cc of oldCCs.items) cc.delete(true);
-        await context.sync();
-
-        // 重新搜索并包裹 CC
-        const results = context.document.body.search("【*】", { matchWildcards: true });
-        results.load("items");
-        await context.sync();
-
-        for (let i = 0; i < results.items.length; i++) {
-          const cc = results.items[i].insertContentControl();
-          cc.tag = "wordai_ref_placeholder";
-          cc.appearance = "Hidden";
-        }
-        await context.sync();
-      });
-
-      refNavState.itemsCount = placeholderData.count;
-      refNavState.bibliography = bibliography;
-      refNavState.currentIndex = 0;
-
-      document.getElementById("ref-navigator").classList.remove("hidden");
-      await updateRefNavigator();
-      showInlineStatus("done", `发现 ${placeholderData.count} 处引用，文献库 ${bibliography.length} 条 ✓`);
-    } catch (err) {
-      showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 5000);
-    }
-  });
-
-  document.getElementById("btn-ref-prev")?.addEventListener("click", () => {
-    if (refNavState.currentIndex > 0) {
-      refNavState.currentIndex--;
-      updateRefNavigator();
-    }
-  });
-
-  document.getElementById("btn-ref-next")?.addEventListener("click", () => {
-    if (refNavState.currentIndex < refNavState.items.length - 1) {
-      refNavState.currentIndex++;
-      updateRefNavigator();
-    }
-  });
-
-  document.getElementById("btn-ref-confirm")?.addEventListener("click", handleRefConfirm);
-
-  // 一键刷新编号与链接
-  document.getElementById("btn-refresh-refs")?.addEventListener("click", async () => {
-    try {
-      showInlineStatus("processing", "正在刷新引用编号与链接...");
-      await Word.run(async (context) => {
-        const body = context.document.body;
-        // 搜索所有 [N] 格式的引用
-        const matches = body.search("\\[[0-9\\- ,]@\\]", { matchWildcards: true });
-        matches.load("items");
-        await context.sync();
-        for (const m of matches.items) m.load("text");
-        await context.sync();
-
-        let linkedCount = 0;
-        for (const m of matches.items) {
-          const numMatch = m.text.match(/\d+/);
-          if (numMatch) {
-            m.hyperlink = `#wordai_ref_${numMatch[0]}`;
-            m.font.color = "black";
-            m.font.underline = "None";
-            linkedCount++;
-          }
-        }
-        await context.sync();
-        showInlineStatus("done", `已刷新 ${linkedCount} 处引用链接 ✓`);
-      });
-    } catch (err) {
-      showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 5000);
-    }
-  });
-
-  // --- 写作辅助 ---
-  document.getElementById("btn-term-check")?.addEventListener("click", async () => {
-    try {
-      const resultsDiv = document.getElementById("term-check-results");
-      resultsDiv.classList.remove("hidden");
-      resultsDiv.innerHTML = '<div class="compact-list-item">扫描并识别术语中...</div>';
-
-      let extractedText = "";
-
-      await Word.run(async (context) => {
-        const body = context.document.body;
-        body.load("text");
-        await context.sync();
-        extractedText = body.text.substring(0, 15000); // 截取核心内容
-      });
-
-      // 【关键修复】：将耗时巨大的大模型网络请求彻底剥离出随时可能 Timeout 的 Word.run 隔离区
-      const terminologyBank = parseTerminologyBank(storage.getTerminologyBankRaw());
-      const bankConflicts = findTerminologyBankConflicts(extractedText, terminologyBank);
-      const aiConflicts = await termUtils.extractTerminology(extractedText);
-      const conflicts = mergeTerminologyConflicts(bankConflicts, aiConflicts);
-
-      if (!conflicts || conflicts.length === 0) {
-        resultsDiv.innerHTML = '<div class="compact-list-item">未发现明显术_语冲突 ✨</div>';
-        setTimeout(() => resultsDiv.classList.add("hidden"), 3000);
-        return;
-      }
-
-      resultsDiv.innerHTML = conflicts.map((c, i) => `
-          <div class="compact-list-item term-conflict-item">
-            <div style="flex:1">
-              <span class="badge" style="background:var(--primary-light)">${escapeHtml(c.standard)}</span>
-              <span style="font-size:10px; color:var(--text-secondary)"> ← ${escapeHtml(c.aliases.join(", "))}</span>
-            </div>
-            <button class="btn btn-xs btn-ghost unify-term-btn" data-index="${i}">统一</button>
-          </div>
-        `).join("");
-
-      // 绑定统一事件
-      resultsDiv.querySelectorAll(".unify-term-btn").forEach(btn => {
-        btn.addEventListener("click", async () => {
-          const conflict = conflicts[parseInt(btn.dataset.index, 10)];
-          const standard = conflict?.standard || "";
-          const aliases = Array.isArray(conflict?.aliases) ? conflict.aliases : [];
-          btn.disabled = true;
-          btn.textContent = "⏳";
-          try {
-            await termUtils.replaceTerminology(aliases, standard);
-            showToast(`全文 ${standard} 已统一 ✓`, "success");
-            btn.closest(".term-conflict-item").style.opacity = "0.5";
-            btn.textContent = "已统一";
-          } catch (err) {
-            showToast(err.message, "error");
-            btn.disabled = false;
-            btn.textContent = "统一";
-          }
-        });
-      });
-    } catch (err) {
-      showToast(err.message, "error");
-      document.getElementById("term-check-results").classList.add("hidden");
-    }
-  });
-
-  document.getElementById("btn-renumber")?.addEventListener("click", async () => {
-    try {
-      showInlineStatus("processing", "正在重排图表编号...");
-      const result = await numberUtils.renumberFiguresAndTables();
-      showToast(result.message, "success");
-      hideInlineStatus();
-    } catch (err) {
-      showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 3000);
-    }
-  });
-
-  document.getElementById("btn-gen-abstract")?.addEventListener("click", async () => {
-    try {
-      showInlineStatus("processing", "正在提炼全文生成摘要...");
-      const abstract = await abstractUtils.generateAbstract();
-
-      // 将摘要插入到文档开头，使用富文本渲染
-      await Word.run(async (context) => {
-        const body = context.document.body;
-        const headerRange = body.insertParagraph("【AI 生成摘要与关键词】", "Start");
-        headerRange.font.bold = true;
-        headerRange.font.size = 14;
-        await context.sync();
-
-        await format.insertMarkdownAsRichText(headerRange, abstract, "After");
-      });
-
-      showToast("摘要已生成并插入文首", "success");
-      hideInlineStatus();
-    } catch (err) {
-      showInlineStatus("error", err.message);
-      setTimeout(() => hideInlineStatus(), 3000);
-    }
-  });
-}
-
-async function updateRefNavigator() {
-  const status = document.getElementById("ref-nav-status");
-  const target = document.getElementById("ref-nav-target");
-
-  await Word.run(async (context) => {
-    const ccs = context.document.contentControls.getByTag("wordai_ref_placeholder");
-    ccs.load("items");
-    await context.sync();
-
-    if (ccs.items.length === 0 || refNavState.currentIndex >= ccs.items.length) {
-      document.getElementById("ref-navigator").classList.add("hidden");
-      return;
-    }
-
-    const currentCC = ccs.items[refNavState.currentIndex];
-    currentCC.load("text");
-    currentCC.select();
-    await context.sync();
-
-    const text = currentCC.text;
-    const suggestions = refUtils.matchPlaceholderToBibliography(text, refNavState.bibliography || []);
-    refNavState.suggestions = suggestions;
-
-    status.textContent = `第 ${refNavState.currentIndex + 1}/${ccs.items.length} 处: ${text}`;
-
-    if (suggestions.length > 0) {
-      target.value = `建议匹配: [${suggestions[0].id}] ${suggestions[0].text.substring(0, 50)}...`;
-      target.style.color = "var(--primary)";
-    } else {
-      target.value = "未找到匹配项";
-      target.style.color = "var(--error)";
-    }
-
-    // ⚡ 动态诊断与打分渲染
-    const detailsContent = document.getElementById("ref-match-details-content");
-    if (detailsContent) {
-      const clean = text.replace(/[【】\[\]]/g, "");
-      const authorMatch = clean.match(/[\u4e00-\u9fff]{2,4}|[a-zA-Z\-]{2,}/);
-      const yearMatch = clean.match(/\b(19|20)\d{2}\b/);
-      const pAuthor = authorMatch ? authorMatch[0].toLowerCase() : null;
-      const pYear = yearMatch ? yearMatch[0] : null;
-
-      const displayAuthor = escapeHtml(pAuthor || "无");
-      const displayYear = escapeHtml(pYear || "无");
-      let html = `<div style="margin-bottom:4px; font-weight:bold; color:var(--primary);">正文提取：作者="${displayAuthor}" 年份="${displayYear}"</div>`;
-      
-      if (!refNavState.bibliography || refNavState.bibliography.length === 0) {
-        html += `<div style="color:var(--error); font-weight:bold;">⚠️ 侧边栏未检索到文末参考文献！请先确认文档末尾有以“参考文献”或“References”命名的标题，且下方包含完整的文献列表。</div>`;
-      } else {
-        html += refNavState.bibliography.map(entry => {
-          let score = 0;
-          let matchLog = [];
-          if (pAuthor && entry.coreAuthor === pAuthor) {
-            score += 60;
-            matchLog.push(`核心作者对齐(+60)`);
-          } else if (pAuthor && entry.text.toLowerCase().includes(pAuthor)) {
-            score += 30;
-            matchLog.push(`包含核心作者(+30)`);
-          }
-          if (pYear && entry.year === pYear) {
-            score += 40;
-            matchLog.push(`年份相同(+40)`);
-          }
-          const logStr = score > 0 ? ` [${matchLog.join(',')}]` : ' [无匹配点]';
-          const displayText = escapeHtml(entry.text.substring(0, 45));
-          return `<div style="margin-bottom:4px; border-bottom:1px dashed rgba(0,0,0,0.05); padding-bottom:2px; ${score > 0 ? 'color:#10b981; font-weight:500;' : ''}">
-            [${entry.id}] 得分: ${score}${escapeHtml(logStr)}<br/>
-            <span style="font-size:9px; opacity:0.8; color:var(--text-secondary);">文献: ${displayText}...</span>
-          </div>`;
-        }).join("");
-      }
-      detailsContent.innerHTML = html;
-    }
-  });
-}
-
-// 确认按钮逻辑（需要在外面绑定，或在此处根据需要修改按钮监听器）
-// 之前是在 init 中绑定的，这里我补充一下针对 CC 的逻辑修改
-async function handleRefConfirm() {
-  try {
-    const suggestions = refNavState.suggestions || [];
-    const bestMatch = suggestions[0];
-
-    if (!bestMatch) {
-      showToast("未找到匹配的参考文献，请手动处理", "warning");
-      return;
-    }
-
-    await Word.run(async (context) => {
-      const ccs = context.document.contentControls.getByTag("wordai_ref_placeholder");
-      ccs.load("items");
-      await context.sync();
-
-      if (ccs.items.length > refNavState.currentIndex) {
-        const currentCC = ccs.items[refNavState.currentIndex];
-        const replacement = `[${bestMatch.id}]`;
-        const run = currentCC.insertText(replacement, "Replace");
-        run.font.color = "#2563eb";
-        currentCC.delete(false); // 仅删除容器，保留文字
-        await context.sync();
-
-        showToast(`已匹配到: ${bestMatch.text.substring(0, 20)}...`, "success");
-
-        if (refNavState.currentIndex < ccs.items.length - 1) {
-          // 下一个（currentIndex 不变，因为删了一个 CC 后后面的索引会顶上来）
-          await updateRefNavigator();
-        } else {
-          document.getElementById("ref-navigator").classList.add("hidden");
-          showToast("全部匹配完成", "success");
-        }
-      }
-    });
-  } catch (err) {
-    showToast(err.message, "error");
+  // 恢复上次保存的样式名到输入框
+  if (styleInput) {
+    styleInput.value = storage.getCustomTableStyle();
   }
+
+  // 自动保存用户输入/选择的样式名
+  const saveStyleName = (name) => {
+    storage.setCustomTableStyle(name);
+  };
+  styleInput?.addEventListener("change", (e) => saveStyleName(e.target.value));
+  styleSelect?.addEventListener("change", (e) => saveStyleName(e.target.value));
+
+  // 异步加载文档中所有表格样式（含用户自定义样式）填充下拉
+  if (styleSelect) {
+    styleSelect.innerHTML = '<option value="">-- 加载中... --</option>';
+    tableUtils
+      .getTableStyles()
+      .then((names) => {
+        if (names.length === 0) {
+          styleSelect.innerHTML = '<option value="">-- 未发现表格样式 --</option>';
+          fallbackToInput("文档中未发现表格样式");
+          return;
+        }
+        // 优先把含"三线"的自定义样式排前面，其余按名称排序
+        const sorted = [...names].sort((a, b) => {
+          const aThree = a.includes("三线");
+          const bThree = b.includes("三线");
+          if (aThree !== bThree) return aThree ? -1 : 1;
+          return a.localeCompare(b, "zh");
+        });
+        styleSelect.innerHTML = sorted
+          .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
+          .join("");
+      })
+      .catch((err) => {
+        styleSelect.innerHTML = '<option value="">-- 加载失败 --</option>';
+        fallbackToInput(err && err.message);
+      });
+  }
+
+  // 读取当前生效的样式名（下拉优先，其次手动输入）
+  const readStyleName = () => {
+    if (styleSelect && !styleSelect.classList.contains("hidden")) {
+      return styleSelect.value || "";
+    }
+    return styleInput ? styleInput.value.trim() : "";
+  };
+
+  // 读取当前宽度模式
+  const readWidthMode = () => document.getElementById("select-width-mode")?.value || "";
+
+  document.getElementById("btn-apply-table-style")?.addEventListener("click", async () => {
+    const styleName = readStyleName();
+    if (!styleName) {
+      showToast("请先选择或输入表格样式名", "warning");
+      return;
+    }
+    saveStyleName(styleName);
+    try {
+      showInlineStatus("processing", "正在应用表格样式...");
+      const count = await tableUtils.optimizeSelection({ styleName, widthMode: readWidthMode() });
+      showInlineStatus("done", `已应用「${styleName}」到 ${count} 个表格 ✓`);
+    } catch (err) {
+      showInlineStatus("error", err.message);
+      setTimeout(() => hideInlineStatus(), 5000);
+    }
+  });
+
+  document.getElementById("btn-apply-all-tables")?.addEventListener("click", async () => {
+    const styleName = readStyleName();
+    if (!styleName) {
+      showToast("请先选择或输入表格样式名", "warning");
+      return;
+    }
+    saveStyleName(styleName);
+    try {
+      showInlineStatus("processing", `正在为全部表格应用「${styleName}」...`);
+      const count = await tableUtils.applyStyleToAllTables({ styleName, widthMode: readWidthMode() });
+      showInlineStatus("done", `已为全文 ${count} 个表格应用「${styleName}」✓`);
+    } catch (err) {
+      showInlineStatus("error", err.message);
+      setTimeout(() => hideInlineStatus(), 5000);
+    }
+  });
+
 }
