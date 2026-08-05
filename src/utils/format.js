@@ -19,7 +19,7 @@ export async function processMarkdownLine(container, line, refMap = []) {
     const insertedRange = container.insertParagraph(titleText, "End");
     insertedRange.font.bold = true;
     insertedRange.font.size = 14;
-    insertedRange.spacingBefore = 12;
+    insertedRange.spaceBefore = 12;
     return;
   }
 
@@ -28,7 +28,7 @@ export async function processMarkdownLine(container, line, refMap = []) {
     const insertedRange = container.insertParagraph(titleText, "End");
     insertedRange.font.bold = true;
     insertedRange.font.size = 16;
-    insertedRange.spacingBefore = 14;
+    insertedRange.spaceBefore = 14;
     return;
   }
 

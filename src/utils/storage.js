@@ -20,6 +20,8 @@ const STORAGE_KEYS = {
   QUALITY_MODEL: "wordai_quality_model",
   TASK_HISTORY: "wordai_task_history",
   TERMINOLOGY_BANK: "wordai_terminology_bank",
+  CUSTOM_TABLE_STYLE: "wordai_custom_table_style",
+  TRACKED_AUTHOR: "wordai_tracked_author",
 };
 
 // 默认预设提示词
@@ -246,13 +248,13 @@ export function getPrompts() {
           p.name = "至中";
           migrated = true;
         }
-        // 自动迁移旧版简短的“降AI”提示词到专家版
-        if (p.id === "deai" && (p.prompt.includes("更像人类自然书写") || p.prompt.length < 200)) {
+        // 自动迁移旧版“降AI”提示词到专家版（仅当命中旧版默认文案特征，避免覆盖用户自定义内容）
+        if (p.id === "deai" && p.prompt.includes("更像人类自然书写")) {
           p.prompt = DEFAULT_PROMPTS.find(dp => dp.id === "deai").prompt;
           migrated = true;
         }
-        // 专家版“降AI”追加学术降温优化指令
-        if (p.id === "deai" && !p.prompt.includes("【学术降温优化指令】")) {
+        // 旧版专家版“降AI”提示词自动追加学术降温优化指令（仅当命中旧版专家版特征串）
+        if (p.id === "deai" && p.prompt.includes("你的角色与目标") && !p.prompt.includes("【学术降温优化指令】")) {
           p.prompt = DEFAULT_PROMPTS.find(dp => dp.id === "deai").prompt;
           migrated = true;
         }
@@ -429,6 +431,50 @@ export function getTerminologyBankRaw() {
 
 export function setTerminologyBankRaw(value) {
   localStorage.setItem(STORAGE_KEYS.TERMINOLOGY_BANK, value || "");
+}
+
+export function getCustomTableStyle() {
+  return localStorage.getItem(STORAGE_KEYS.CUSTOM_TABLE_STYLE) || "";
+}
+
+export function setCustomTableStyle(value) {
+  localStorage.setItem(STORAGE_KEYS.CUSTOM_TABLE_STYLE, (value || "").trim());
+}
+
+export function getTrackedAuthor() {
+  return localStorage.getItem(STORAGE_KEYS.TRACKED_AUTHOR) || "";
+}
+
+export function setTrackedAuthor(value) {
+  localStorage.setItem(STORAGE_KEYS.TRACKED_AUTHOR, (value || "").trim());
+}
+
+/**
+ * 导出全部配置为 JSON 字符串
+ */
+export function exportConfig() {
+  const data = {};
+  for (const k of Object.values(STORAGE_KEYS)) {
+    const v = localStorage.getItem(k);
+    if (v != null) data[k] = v;
+  }
+  return JSON.stringify(data, null, 2);
+}
+
+/**
+ * 从 JSON 还原全部配置
+ * @param {string} json - exportConfig 输出的 JSON
+ */
+export function importConfig(json) {
+  const data = JSON.parse(json);
+  let count = 0;
+  for (const k of Object.values(STORAGE_KEYS)) {
+    if (data[k] != null) {
+      localStorage.setItem(k, String(data[k]));
+      count++;
+    }
+  }
+  return count;
 }
 
 export { DEFAULT_PROMPTS, DEFAULT_SKIP_RULES };

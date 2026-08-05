@@ -10,6 +10,7 @@ const REF_BOOKMARK_PREFIX = "wordai_ref_";
  */
 export async function markSelection() {
   let finalItems = [];
+  let formulaSkippedCount = 0;
   try {
     await Word.run(async (context) => {
       const doc = context.document;
@@ -92,12 +93,13 @@ export async function markSelection() {
           if (skipRules.tables && !p.parentTableOrNullObject.isNullObject)
             continue;
 
-          // 强制保护：只要包含公式标签就跳过润色以防止损坏
+          // 保护：含公式（oMath）的段落跳过，避免 AI 破坏公式
           const xml = paraOoxmlMap.get(p);
           if (
             xml &&
             (xml.includes("<m:oMath") || xml.includes("<m:oMathPara"))
           ) {
+            formulaSkippedCount++;
             continue;
           }
 
@@ -238,6 +240,7 @@ export async function markSelection() {
     console.error("markSelection Error:", err);
     throw err;
   }
+  finalItems.skippedInfo = { formula: formulaSkippedCount };
   return finalItems;
 }
 
@@ -297,8 +300,12 @@ export function parseAiResult(text, refMap) {
 
 /**
  * 替换标记内容并恢复引用
+ * @param {string} aiResult - 大模型处理后的文本
+ * @param {Array} refMap - 引用/公式遮罩映射
+ * @param {Object} boundaryTags - 段落边界 CC 标签
+ * @param {string} originalText - 原始段落文本（用于字符级对比，可选）
  */
-export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags) {
+export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags, originalText) {
   await Word.run(async (context) => {
     const ccs = context.document.contentControls;
     ccs.load("items");
@@ -314,23 +321,24 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
     // 1. 在内存中将大模型结果拆解为 AST 节点
     const { parts, placedIds } = parseAiResult(aiResult, refMap);
 
-    // 2. 检查并开启 Word 宿主的跟踪修订模式以显示红线对比
+    // 2. 回填：开启修订模式 → Word 原生修订（TrackAll + delete + 重插，可移植接受）；
+    //    否则整段直接替换。稳定优先，不使用 OOXML 字符级注入。
     const diffMode = storage.getDiffMode();
-    let originalTrackingMode = "Off";
-    if (diffMode && Office.context.requirements.isSetSupported("WordApi", "1.4")) {
+    let originalTrackingMode = null;
+    if (diffMode) {
       context.document.load("changeTrackingMode");
       await context.sync();
       originalTrackingMode = context.document.changeTrackingMode;
-      context.document.changeTrackingMode = "TrackAll";
+      context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
     }
 
-    // 3. 清空原本的旧文本
+    // 3. 删除旧文本（修订模式下生成"删除"修订；须用 delete，clear 不生成修订）
     const targetRange = startCC
       .getRange("After")
       .expandTo(endCC.getRange("Before"));
-    targetRange.clear();
+    targetRange.delete();
 
-    // 4. 链式组装新文本与引用的原始 OOXML
+    // 4. 链式组装新文本与引用的原始 OOXML（修订模式下生成"插入"修订）
     let currentLoc = startCC.getRange("After");
     for (const part of parts) {
       if (part.type === "text") {
@@ -354,7 +362,7 @@ export async function replaceSingleMarkedContent(aiResult, refMap, boundaryTags)
     await context.sync();
 
     // 6. 回写完毕，恢复 Word 原本的修订跟踪状态
-    if (diffMode && Office.context.requirements.isSetSupported("WordApi", "1.4")) {
+    if (diffMode && originalTrackingMode != null) {
       context.document.changeTrackingMode = originalTrackingMode;
       await context.sync();
     }
@@ -441,7 +449,7 @@ export async function executeAndReplace(processText, onStatus, signal) {
       const aiText = aiTexts[i];
       const seg = segments[i];
       if (aiText && aiText.trim()) {
-        await replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags);
+        await replaceSingleMarkedContent(aiText, seg.refMap, seg.boundaryTags, seg.text);
       }
     }
     return { result: "完成" };
@@ -449,38 +457,7 @@ export async function executeAndReplace(processText, onStatus, signal) {
     if (segments) {
       // 智能回滚：如果大模型请求崩溃或被拒绝，必须把文档中由于第一步锁定而生成的 [REF_N] 给还原成原来的角标！
       try {
-        await Word.run(async (context) => {
-          const ccs = context.document.contentControls;
-          ccs.load("items");
-          await context.sync();
-
-          for (const seg of segments) {
-            const startCC = ccs.items.find(
-              (c) => c.tag === seg.boundaryTags.start,
-            );
-            const endCC = ccs.items.find((c) => c.tag === seg.boundaryTags.end);
-            if (startCC && endCC) {
-              const currentSeg = startCC
-                .getRange("After")
-                .expandTo(endCC.getRange("Before"));
-              for (const mapItem of seg.refMap) {
-                // 修正回滚正则，支持 REF, EQN 和 FNOTE
-                const placeholder = mapItem.placeholder
-                  .replace("[", "\\[")
-                  .replace("]", "\\]");
-                const s = currentSeg.search(placeholder, {
-                  matchWildcards: false,
-                });
-                s.load("items");
-                await context.sync();
-                if (s.items && s.items.length > 0) {
-                  for (const t of s.items)
-                    t.insertOoxml(mapItem.originalXml, "Replace");
-                }
-              }
-            }
-          }
-        });
+        await rollbackSegments(segments);
       } catch (rollbackErr) {
         console.error("Rollback failed:", rollbackErr);
       }
@@ -488,6 +465,54 @@ export async function executeAndReplace(processText, onStatus, signal) {
     await clearMarks();
     throw err;
   }
+}
+
+/**
+ * 回滚失败任务：将遮罩占位符还原为原始 OOXML，并清理边界/遮罩 ContentControl
+ * @param {Array} segments - markSelection() 返回的段落任务
+ */
+export async function rollbackSegments(segments) {
+  await Word.run(async (context) => {
+    const ccs = context.document.contentControls;
+    ccs.load("items");
+    await context.sync();
+
+    for (const seg of segments || []) {
+      const startCC = ccs.items.find((c) => c.tag === seg.boundaryTags.start);
+      const endCC = ccs.items.find((c) => c.tag === seg.boundaryTags.end);
+
+      if (startCC && endCC) {
+        // 1. 还原 [REF_N] / [EQN_N] / [FNOTE_N] 遮罩为原始 OOXML
+        const currentSeg = startCC
+          .getRange("After")
+          .expandTo(endCC.getRange("Before"));
+        for (const mapItem of seg.refMap || []) {
+          const placeholder = mapItem.placeholder.replace(/[\[\]]/g, "\\$&");
+          const s = currentSeg.search(placeholder, { matchWildcards: false });
+          s.load("items");
+          await context.sync();
+          if (s.items && s.items.length > 0) {
+            for (const t of s.items) t.insertOoxml(mapItem.originalXml, "Replace");
+          }
+        }
+
+        // 2. 清理边界 CC（保留文字内容）
+        startCC.delete(true);
+        endCC.delete(true);
+      }
+
+      // 3. 清理本任务创建的遮罩 CC（内容已还原，delete 时保留）
+      for (const mapItem of seg.refMap || []) {
+        const shieldCCs = context.document.contentControls.getByTag(
+          `${SHIELD_PREFIX}${mapItem.id}`
+        );
+        shieldCCs.load("items");
+        await context.sync();
+        for (const c of shieldCCs.items) c.delete(true);
+      }
+    }
+    await context.sync();
+  });
 }
 
 export async function clearMarks() {
@@ -508,3 +533,81 @@ export async function clearMarks() {
     await context.sync();
   });
 }
+
+// ==================== 字符级 diff 对比 ====================
+
+/**
+ * 字符级 LCS diff：返回 { type: "keep"|"del"|"ins", text } 序列。
+ * 文本过长时返回 null（由调用方回退为整段替换）。
+ */
+export function diffText(original, modified) {
+  const a = String(original || "");
+  const b = String(modified || "");
+  const n = a.length;
+  const m = b.length;
+  if (n * m > 4000000) return null;
+
+  const dp = new Array(n + 1);
+  for (let i = 0; i <= n; i++) dp[i] = new Array(m + 1).fill(0);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ type: "keep", text: a[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: "del", text: a[i] });
+      i++;
+    } else {
+      ops.push({ type: "ins", text: b[j] });
+      j++;
+    }
+  }
+  while (i < n) {
+    ops.push({ type: "del", text: a[i] });
+    i++;
+  }
+  while (j < m) {
+    ops.push({ type: "ins", text: b[j] });
+    j++;
+  }
+  return ops;
+}
+
+/**
+ * 合并连续相同类型的操作，减少回填时的 API 调用次数。
+ */
+export function mergeDiffOps(ops) {
+  const merged = [];
+  for (const op of ops || []) {
+    const last = merged[merged.length - 1];
+    if (last && last.type === op.type) last.text += op.text;
+    else merged.push({ type: op.type, text: op.text });
+  }
+  return merged;
+}
+
+/**
+ * 接受全部修订（Word 原生修订）
+ * @returns {Promise<number>} 接受的修订数
+ */
+export async function acceptAllDiff() {
+  return await Word.run(async (context) => {
+    const trackedChanges = context.document.body.getTrackedChanges();
+    trackedChanges.load("items");
+    await context.sync();
+    const count = trackedChanges.items.length;
+    trackedChanges.acceptAll();
+    await context.sync();
+    return count;
+  });
+}
+

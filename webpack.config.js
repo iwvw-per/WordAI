@@ -1,11 +1,33 @@
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const CopyWebpackPlugin = require("copy-webpack-plugin");
 const devCerts = require("office-addin-dev-certs");
 
+// 本地调试证书：优先使用 ~/.office-addin-dev-certs 下的有效证书
+// （office-addin-dev-certs 的 getHttpsServerOptions() 在部分环境会因证书重装流程挂起）
+function loadLocalHttpsOptions() {
+  const certDir = path.join(os.homedir(), ".office-addin-dev-certs");
+  const certFile = path.join(certDir, "localhost.crt");
+  const keyFile = path.join(certDir, "localhost.key");
+  const caFile = path.join(certDir, "ca.crt");
+  if (fs.existsSync(certFile) && fs.existsSync(keyFile)) {
+    const options = {
+      cert: fs.readFileSync(certFile),
+      key: fs.readFileSync(keyFile),
+    };
+    if (fs.existsSync(caFile)) {
+      options.ca = fs.readFileSync(caFile);
+    }
+    return options;
+  }
+  return undefined;
+}
+
 module.exports = async (env, options) => {
   const dev = options.mode === "development";
-  const httpsOptions = dev ? await devCerts.getHttpsServerOptions() : {};
+  const httpsOptions = dev ? (loadLocalHttpsOptions() || await devCerts.getHttpsServerOptions()) : {};
 
   return {
     entry: {

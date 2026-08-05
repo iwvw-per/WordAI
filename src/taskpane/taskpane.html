@@ -20,12 +20,6 @@
   <div id="app">
     <!-- 顶部 -->
     <header id="header">
-      <div class="header-title">
-        <span class="logo">⚡</span>
-        <h1>WordAI</h1>
-        <span style="flex:1"></span>
-        <button class="theme-toggle" id="theme-toggle-btn" title="切换主题">🌓</button>
-      </div>
       <nav class="tab-bar">
         <button class="tab-btn active" data-tab="actions" id="tab-actions">操作</button>
         <button class="tab-btn" data-tab="academic" id="tab-academic">学术</button>
@@ -35,7 +29,7 @@
 
     <!-- 未配置提示 -->
     <div id="config-banner" class="config-banner hidden">
-      <p>⚙️ 请先完成 API 配置</p>
+      <p>请先完成 API 配置</p>
       <button class="btn btn-sm btn-primary" id="go-settings-btn">前往设置</button>
     </div>
 
@@ -44,7 +38,7 @@
       <!-- 极速学术快捷操作台 (快捷唤出) -->
       <div id="quick-action-deck" class="quick-action-deck hidden">
         <div class="deck-header">
-          <span class="deck-title">⚡ 极速学术快捷操作台</span>
+          <span class="deck-title">快捷操作</span>
           <button class="deck-close" id="btn-close-deck" title="关闭">×</button>
         </div>
         <div class="deck-body">
@@ -77,19 +71,16 @@
         </div>
       </section>
 
-      <!-- 新增：批量处理队列与滚动终端控制台 -->
-      <section class="section hidden" id="pipeline-console-section" style="margin-top: 10px;">
+      <!-- 批量处理队列与滚动终端控制台（常驻） -->
+      <section class="section" id="pipeline-console-section">
         <div class="pipeline-console" id="pipeline-console">
           <div class="console-header">
-            <span class="console-dot red"></span>
-            <span class="console-dot yellow"></span>
-            <span class="console-dot green"></span>
-            <span class="console-title" id="pipeline-console-title">空闲</span>
+            <span class="console-title" id="pipeline-console-title">就绪</span>
             <span style="flex:1"></span>
             <button class="btn btn-xs btn-ghost" id="btn-clear-console" style="font-size:9px; padding:2px 6px; opacity:0.7;">清除</button>
           </div>
           <div class="console-body" id="pipeline-console-body">
-            <div class="console-line system">⚡ 流水线已准备就绪。</div>
+            <div class="console-line system">就绪</div>
           </div>
         </div>
       </section>
@@ -97,73 +88,44 @@
 
     <!-- 学术页 -->
     <div id="page-academic" class="page">
-      <!-- 表格工具 -->
+      <!-- 表格样式 -->
       <section class="section academic-section">
-        <h2 class="section-title">📊 表格美化</h2>
+        <h2 class="section-title">表格样式</h2>
         <div class="academic-card">
-          <button class="btn btn-primary btn-block btn-sm" id="btn-apply-3line">一键三线表</button>
-          <button class="btn btn-ghost btn-block btn-sm" id="btn-scan-tables" style="margin-top:4px">扫描全文表格</button>
-          <div id="table-scan-results" class="compact-list hidden"></div>
-
-          <details class="compact-details">
-            <summary>微调参数</summary>
-            <div class="form-group-compact">
-              <label>顶/底线宽 (pt)</label>
-              <input type="number" id="input-line-bold" value="1.5" step="0.25" min="0.5" class="form-input-sm">
+          <div class="form-group">
+            <label class="form-label" for="select-table-style">样式</label>
+            <select id="select-table-style" class="form-input"></select>
+            <div id="custom-style-wrap" class="hidden">
+              <input type="text" id="input-custom-style" class="form-input" placeholder="样式名" style="margin-top:4px;" />
             </div>
-          </details>
-        </div>
-      </section>
-
-      <!-- 引用工具 -->
-      <section class="section academic-section">
-        <h2 class="section-title">📚 参考文献</h2>
-        <div class="academic-card">
-          <button class="btn btn-primary btn-block btn-sm" id="btn-match-refs">匹配占位符 【作者】</button>
-
-          <!-- 参考文献分步导航 -->
-          <div id="ref-navigator" class="hidden"
-            style="margin-top:8px; padding:8px; background:var(--bg-base); border-radius:var(--radius-sm); border:1px solid var(--border);">
-            <div style="font-size:11px; margin-bottom:4px; color:var(--text-secondary);" id="ref-nav-status">正在匹配第 0/0
-              处引用</div>
-            <div style="display:flex; gap:4px; margin-bottom:6px;">
-              <input type="text" id="ref-nav-target" class="form-input" style="flex:1; font-size:11px; padding:4px;"
-                readonly>
-            </div>
-            <div style="display:flex; gap:4px;">
-              <button class="btn btn-ghost btn-sm" id="btn-ref-prev" style="padding:2px 8px;">←</button>
-              <button class="btn btn-primary btn-sm" id="btn-ref-confirm" style="flex:1; padding:2px 8px;">确认替换</button>
-              <button class="btn btn-ghost btn-sm" id="btn-ref-next" style="padding:2px 8px;">→</button>
-            </div>
-            
-            <!-- 新增：文献打分匹配分析诊断抽屉 -->
-            <details class="compact-details" style="margin-top:6px; font-size:10px; border-top:1px dashed var(--border); padding-top:6px;" id="ref-match-details-container">
-              <summary style="cursor:pointer; color:var(--text-secondary); outline:none;">🔍 匹配打分调试详情</summary>
-              <div id="ref-match-details-content" style="padding-top:4px; max-height:110px; overflow-y:auto; color:var(--text-secondary); line-height:1.4;">
-                <!-- 动态诊断数据 -->
-              </div>
-            </details>
           </div>
-
-          <button class="btn btn-ghost btn-block btn-sm" id="btn-refresh-refs" style="margin-top:4px">一键刷新编号与链接</button>
-        </div>
-      </section>
-
-      <!-- 写作辅助 -->
-      <section class="section academic-section">
-        <h2 class="section-title">✍️ 写作辅助</h2>
-        <div class="academic-card">
-          <button class="btn btn-ghost btn-block btn-sm" id="btn-term-check">术语一致性检查</button>
-          <div id="term-check-results" class="compact-list hidden"
-            style="margin-top:4px; max-height:150px; overflow-y:auto;"></div>
-          <button class="btn btn-ghost btn-block btn-sm" id="btn-renumber" style="margin-top:4px">图表编号同步</button>
-          <button class="btn btn-ghost btn-block btn-sm" id="btn-gen-abstract" style="margin-top:4px">生成摘要与关键词</button>
+          <div class="form-group">
+            <label class="form-label" for="select-width-mode">宽度</label>
+            <select id="select-width-mode" class="form-input">
+              <option value="">不调整</option>
+              <option value="window">自适应窗口</option>
+              <option value="content">自适应内容</option>
+              <option value="fixed">固定宽度</option>
+            </select>
+          </div>
+          <div class="table-style-actions">
+            <button class="btn btn-primary" id="btn-apply-table-style">应用</button>
+            <button class="btn btn-ghost" id="btn-apply-all-tables">应用到全部</button>
+          </div>
         </div>
       </section>
     </div>
 
     <!-- 设置页 -->
     <div id="page-settings" class="page">
+      <section class="section">
+        <div style="display:flex; gap:4px;">
+          <button class="btn btn-ghost" id="theme-toggle-btn" style="flex:1">主题</button>
+          <button class="btn btn-ghost" id="btn-backup-config" style="flex:1">备份配置</button>
+          <button class="btn btn-ghost" id="btn-restore-config" style="flex:1">还原配置</button>
+        </div>
+      </section>
+
       <section class="section">
         <h2 class="section-title">API 配置</h2>
         <div class="form-group">
@@ -215,20 +177,25 @@
             <span class="toggle-label">模型路由</span>
           </label>
         </div>
-        <div class="form-group" style="margin-top:8px;">
+        <div class="form-group">
           <label class="form-label" for="fast-model-input">快速模型</label>
-          <input type="text" id="fast-model-input" class="form-input" placeholder="留空则使用默认模型" />
+          <select id="fast-model-input" class="form-input">
+            <option value="">-- 默认模型 --</option>
+          </select>
+          <span class="form-hint">留空使用默认模型</span>
         </div>
         <div class="form-group">
           <label class="form-label" for="quality-model-input">质量模型</label>
-          <input type="text" id="quality-model-input" class="form-input" placeholder="学术/摘要/降AI优先使用" />
+          <select id="quality-model-input" class="form-input">
+            <option value="">-- 默认模型 --</option>
+          </select>
+          <span class="form-hint">学术任务优先使用</span>
         </div>
       </section>
 
       <section class="section">
         <h2 class="section-title">跳过规则</h2>
-        <p class="section-desc">处理时自动跳过</p>
-        <div class="skip-rules">
+        <div class="skip-rules skip-grid">
           <label class="toggle-item"><input type="checkbox" id="skip-headings" checked /><span
               class="toggle-slider"></span><span class="toggle-label">标题</span></label>
           <label class="toggle-item"><input type="checkbox" id="skip-tables" checked /><span
@@ -246,7 +213,6 @@
 
       <section class="section">
         <h2 class="section-title">显示对比</h2>
-        <p class="section-desc">在文档中标记 AI 修改过的地方</p>
         <div class="skip-rules">
           <label class="toggle-item">
             <input type="checkbox" id="diff-mode-toggle" />
@@ -254,20 +220,24 @@
             <span class="toggle-label">开启修订模式</span>
           </label>
         </div>
+        <div class="form-group" style="margin-top:8px;">
+          <label class="form-label" for="input-tracked-author">修订作者名</label>
+          <input type="text" id="input-tracked-author" class="form-input" placeholder="默认 WordAI" />
+        </div>
+        <button class="btn btn-ghost btn-block" id="btn-accept-diff" style="margin-top:8px">接受全部修订</button>
       </section>
 
       <section class="section">
         <h2 class="section-title">并发控制</h2>
-        <p class="section-desc">同时进行 AI 处理的最大任务数</p>
         <div class="form-group" style="margin-top: 8px;">
           <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
-            <span>最大并发任务数</span>
+            <span>并发任务数</span>
             <span id="concurrency-value" class="badge">1</span>
           </label>
           <input type="range" id="concurrency-slider" class="form-range" min="1" max="5" step="1" value="1" style="margin-top: 6px;" />
           <div class="range-labels" style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-top:2px;">
-            <span>串行 (1)</span>
-            <span>极速并发 (5)</span>
+            <span>1</span>
+            <span>5</span>
           </div>
         </div>
       </section>
@@ -296,7 +266,7 @@
       </section>
 
       <footer class="settings-footer">
-        <p>WordAI v1.2.0</p>
+        <p>WordAI v1.3.0</p>
       </footer>
     </div>
   </div>
@@ -320,11 +290,24 @@
       </div>
       <div class="form-group">
         <label class="form-label">提示词</label>
-        <textarea id="prompt-text" class="form-input" rows="4" placeholder="输入内容..."></textarea>
+        <textarea id="prompt-text" class="form-input" rows="10" placeholder="输入内容..."></textarea>
       </div>
       <div class="modal-actions">
         <button class="btn btn-primary" id="save-prompt-btn">保存</button>
         <button class="btn btn-ghost" id="cancel-prompt-btn">取消</button>
+      </div>
+    </div>
+  </div>
+  <!-- 配置备份/还原弹窗 -->
+  <div id="config-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content">
+      <h3 id="config-modal-title">配置备份</h3>
+      <textarea id="config-modal-text" class="form-input" rows="10" placeholder="粘贴配置 JSON"></textarea>
+      <p style="font-size:10px; color:var(--text-secondary); margin-top:4px;">包含 API Key 等敏感信息，请妥善保管</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="config-modal-cancel">取消</button>
+        <button class="btn btn-primary" id="config-modal-ok">确定</button>
       </div>
     </div>
   </div>

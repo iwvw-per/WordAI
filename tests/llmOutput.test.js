@@ -18,5 +18,25 @@ describe("parseSegmentedResponse", () => {
   it("preserves original text when fallback output has fewer lines than segments", () => {
     expect(parseSegmentedResponse("Only first", segments)).toEqual(["Only first", "second original"]);
   });
+
+  it("parses unquoted and single-quoted id variants", () => {
+    expect(parseSegmentedResponse("<p id=0>First</p>\n<p id='1'>Second</p>", segments)).toEqual([
+      "First",
+      "Second",
+    ]);
+  });
+
+  it("strips p tags and splits by line when ids are absent", () => {
+    expect(parseSegmentedResponse("<p>First</p>\n<p>Second</p>", segments)).toEqual([
+      "First",
+      "Second",
+    ]);
+  });
+
+  it("keeps missing segments undefined instead of misaligning when ids are sparse", () => {
+    const result = parseSegmentedResponse('<p id="1">Second</p>', segments);
+    expect(result[0]).toBeUndefined();
+    expect(result[1]).toBe("Second");
+  });
 });
 
