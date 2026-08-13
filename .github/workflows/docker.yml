@@ -21,10 +21,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@39370e3970a6d050c48ff1c4f326b6a6f1b0e529 # v4
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -39,14 +39,14 @@ jobs:
         run: npm run build
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5
+        uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -54,10 +54,10 @@ jobs:
             type=raw,value=latest
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f7ce2e75f8b0d5f5c0a7dbf1c0bfc0e8e57f0d5c # v3
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and push
-        uses: docker/build-push-action@7f9d37fa544684fb73bfe4835a2d5e2b3e8b1e5f # v5
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
