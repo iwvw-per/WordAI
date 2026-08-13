@@ -36,6 +36,13 @@ COPY --from=builder /app/dist/ /usr/share/nginx/html/
 COPY --from=builder /app/scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Ensure nginx cache dir and html dir are writable by nginx user
+RUN chown -R nginx:nginx /var/cache/nginx && \
+    chmod -R 755 /var/cache/nginx && \
+    chown -R nginx:nginx /usr/share/nginx/html
+
+USER nginx
+
 EXPOSE 80
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

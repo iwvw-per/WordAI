@@ -56,7 +56,7 @@ export async function fetchModels() {
     models.sort((a, b) => a.name.localeCompare(b.name));
     return models;
   } catch (error) {
-    if (error.name === "AbortError" || error.message.includes("超时")) {
+    if (error.name === "AbortError") {
       throw new Error("连接超时，请检查网络或代理设置");
     }
     if (error.message.includes("获取模型列表失败")) {

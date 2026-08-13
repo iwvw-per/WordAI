@@ -2,7 +2,7 @@ import { describeModelRoute } from "./modelRouting.js";
 
 /**
  * storage.js - 设置存储管理
- * 使用 localStorage 持久化所有配置
+ * API Key 使用 sessionStorage（进程隔离，关闭即销毁），其余配置使用 localStorage 持久化
  */
 
 const STORAGE_KEYS = {
@@ -190,14 +190,33 @@ export function setEndpoint(endpoint) {
  * 获取 API Key
  */
 export function getApiKey() {
-  return localStorage.getItem(STORAGE_KEYS.API_KEY) || "";
+  try {
+    const key = sessionStorage.getItem(STORAGE_KEYS.API_KEY);
+    if (key) return key;
+
+    // 迁移旧 localStorage 中的 API Key 到 sessionStorage
+    const legacyKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
+    if (legacyKey) {
+      sessionStorage.setItem(STORAGE_KEYS.API_KEY, legacyKey);
+      localStorage.removeItem(STORAGE_KEYS.API_KEY);
+      return legacyKey;
+    }
+
+    return "";
+  } catch {
+    return localStorage.getItem(STORAGE_KEYS.API_KEY) || "";
+  }
 }
 
 /**
- * 设置 API Key
+ * 设置 API Key（存 sessionStorage，关闭即销毁）
  */
 export function setApiKey(key) {
-  localStorage.setItem(STORAGE_KEYS.API_KEY, key);
+  try {
+    sessionStorage.setItem(STORAGE_KEYS.API_KEY, key);
+  } catch {
+    localStorage.setItem(STORAGE_KEYS.API_KEY, key);
+  }
 }
 
 /**

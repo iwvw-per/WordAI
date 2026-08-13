@@ -487,7 +487,7 @@ export async function rollbackSegments(segments) {
           .getRange("After")
           .expandTo(endCC.getRange("Before"));
         for (const mapItem of seg.refMap || []) {
-          const placeholder = mapItem.placeholder.replace(/[\[\]]/g, "\\$&");
+          const placeholder = mapItem.placeholder;
           const s = currentSeg.search(placeholder, { matchWildcards: false });
           s.load("items");
           await context.sync();
@@ -535,65 +535,6 @@ export async function clearMarks() {
 }
 
 // ==================== 字符级 diff 对比 ====================
-
-/**
- * 字符级 LCS diff：返回 { type: "keep"|"del"|"ins", text } 序列。
- * 文本过长时返回 null（由调用方回退为整段替换）。
- */
-export function diffText(original, modified) {
-  const a = String(original || "");
-  const b = String(modified || "");
-  const n = a.length;
-  const m = b.length;
-  if (n * m > 4000000) return null;
-
-  const dp = new Array(n + 1);
-  for (let i = 0; i <= n; i++) dp[i] = new Array(m + 1).fill(0);
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  const ops = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      ops.push({ type: "keep", text: a[i] });
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ type: "del", text: a[i] });
-      i++;
-    } else {
-      ops.push({ type: "ins", text: b[j] });
-      j++;
-    }
-  }
-  while (i < n) {
-    ops.push({ type: "del", text: a[i] });
-    i++;
-  }
-  while (j < m) {
-    ops.push({ type: "ins", text: b[j] });
-    j++;
-  }
-  return ops;
-}
-
-/**
- * 合并连续相同类型的操作，减少回填时的 API 调用次数。
- */
-export function mergeDiffOps(ops) {
-  const merged = [];
-  for (const op of ops || []) {
-    const last = merged[merged.length - 1];
-    if (last && last.type === op.type) last.text += op.text;
-    else merged.push({ type: op.type, text: op.text });
-  }
-  return merged;
-}
 
 /**
  * 接受全部修订（Word 原生修订）

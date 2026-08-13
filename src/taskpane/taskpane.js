@@ -122,7 +122,7 @@ function handleUrlAction() {
     if (!action) return;
 
     // 延迟 800ms 确保 Office/Word JS 以及 DOM 真正初始化就绪
-    setTimeout(async () => {
+    setTimeout(() => {
       // 抹除 URL 中的 action 参数，防止后续页面重载或切换主题时发生二次意外触发（防老旧 IE 内核/ Office 沙盒崩溃保护）
       if (window.history && typeof window.history.replaceState === "function") {
         window.history.replaceState({}, document.title, window.location.pathname);
@@ -133,7 +133,7 @@ function handleUrlAction() {
         if (deck) {
           deck.classList.remove("hidden");
         }
-        // 自动切回“操作”选项卡
+        // 自动切回"操作"选项卡
         const tabBtn = document.getElementById("tab-actions");
         if (tabBtn) tabBtn.click();
         return;
@@ -151,12 +151,14 @@ function handleUrlAction() {
       }
 
       if (targetPrompt) {
-        // 自动切回“操作”选项卡
+        // 自动切回"操作"选项卡
         const tabBtn = document.getElementById("tab-actions");
         if (tabBtn) tabBtn.click();
 
         // 立即静默触发 AI 任务
-        await executeAction(targetPrompt.prompt, targetPrompt.name, null);
+        executeAction(targetPrompt.prompt, targetPrompt.name, null).catch(err => {
+          console.error("URL action 执行失败:", err);
+        });
       }
     }, 800);
   } catch (err) {
